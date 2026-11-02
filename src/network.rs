@@ -89,7 +89,7 @@ impl NetworkManager {
             "table inet fitproxy {{\n\
              \x20   chain prerouting {{\n\
              \x20       type filter hook prerouting priority mangle - 1; policy accept;\n\
-             \x20       ip daddr {} meta l4proto tcp tproxy to :{} meta mark set {} accept\n\
+             \x20       ip daddr {} meta l4proto tcp tproxy ip to :{} meta mark set {} accept\n\
              \x20   }}\n\
              \x20   chain output {{\n\
              \x20       type route hook output priority mangle - 1; policy accept;\n\
