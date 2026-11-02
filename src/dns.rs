@@ -1,8 +1,8 @@
 use simple_dns::{
     CLASS, Packet, QTYPE, ResourceRecord, TYPE,
-    rdata::{A, RData},
+    rdata::{A, AAAA, RData},
 };
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
@@ -152,24 +152,49 @@ impl DnsServer {
             match question.qtype {
                 QTYPE::TYPE(TYPE::A) => {
                     if let Some(fake_ip) = self.fakeip_manager.lookup_or_allocate(&domain) {
-                        debug!("DNS resolved '{}' -> {}", domain, fake_ip);
-                        let record = ResourceRecord::new(
-                            question.qname.clone(),
-                            CLASS::IN,
-                            3, // 3-second TTL for fake IP
-                            RData::A(A {
-                                address: fake_ip.into(),
-                            }),
-                        );
-                        reply.answers.push(record);
+                        match fake_ip {
+                            IpAddr::V4(v4) => {
+                                debug!("DNS resolved '{}' (A) -> {}", domain, v4);
+                                let record = ResourceRecord::new(
+                                    question.qname.clone(),
+                                    CLASS::IN,
+                                    3, // 3-second TTL for fake IP
+                                    RData::A(A {
+                                        address: v4.into(),
+                                    }),
+                                );
+                                reply.answers.push(record);
+                            }
+                            IpAddr::V6(_) => {
+                                debug!("DNS A query for IPv6-pool domain '{}' -> NODATA", domain);
+                            }
+                        }
                     } else {
                         warn!("Failed to allocate fake IP for '{}'", domain);
                     }
                 }
                 QTYPE::TYPE(TYPE::AAAA) => {
-                    // For IPv6 AAAA queries, return empty answer (NODATA)
-                    // so dual-stack clients quickly fall back to IPv4 A record.
-                    debug!("DNS AAAA query for '{}' -> empty answer (NODATA)", domain);
+                    if let Some(fake_ip) = self.fakeip_manager.lookup_or_allocate(&domain) {
+                        match fake_ip {
+                            IpAddr::V6(v6) => {
+                                debug!("DNS resolved '{}' (AAAA) -> {}", domain, v6);
+                                let record = ResourceRecord::new(
+                                    question.qname.clone(),
+                                    CLASS::IN,
+                                    3, // 3-second TTL for fake IP
+                                    RData::AAAA(AAAA {
+                                        address: v6.into(),
+                                    }),
+                                );
+                                reply.answers.push(record);
+                            }
+                            IpAddr::V4(_) => {
+                                debug!("DNS AAAA query for IPv4-pool domain '{}' -> NODATA", domain);
+                            }
+                        }
+                    } else {
+                        warn!("Failed to allocate fake IP for '{}'", domain);
+                    }
                 }
                 _ => {
                     // Other types (HTTPS, TXT, etc.): return empty answer

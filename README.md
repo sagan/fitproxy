@@ -32,15 +32,15 @@ fitproxy \
   * `-` : main domain only. E.g. `-.example.com` matches `example.com` only, NOT `a.example.com`.
   * An implicit `*=reject` fallback rule is always used at the end. At least 1 rule must be provided.
 
-* `--fakeip-range <cidr>` : (Optional) The fake IP CIDR range. Defaults to `198.18.0.0/15`.
-* `--fakeip <domain>=<ip>` : (Optional) Pre-assign fixed/static fake IP to domains (exact domain only). Example: `--fakeip google.com=198.18.0.2`. Static fake IPs take precedence over dynamic allocations.
+* `--fakeip-range <cidr>` : (Optional) The fake IP CIDR range (supports IPv4 e.g. `198.18.0.0/15` or IPv6 e.g. `fc00::/18`). Defaults to `198.18.0.0/15`.
+* `--fakeip <domain>=<ip>` : (Optional) Pre-assign fixed/static fake IP to domains (exact domain only, IPv4 or IPv6). Example: `--fakeip google.com=198.18.0.2`. Static fake IPs take precedence over dynamic allocations.
 * `--listen [<ip>:]<port>` : (Optional) TPROXY listen address. Defaults to `7080`.
 * `--listen-dns [<ip>:]<port>` : (Optional) DNS server listen address. Defaults to `7053`.
 * `--cache <path>` : (Optional) Disk fake IP cache file path. Defaults to `/tmp/fitproxy_fakeip`.
 * `-c, --config <path>` : (Optional) Path to JSON config file (if it exists). Defaults to `/etc/fitproxy.json`. CLI flags override config file options.
 * `--no-network-setup` : (Optional) Disable automatic `nftables` and `ip rule`/`ip route` setup (useful in non-root or container testing environments).
-* `--table-id <id>` : (Optional) Policy routing table ID. Defaults to `7080`.
-* `--fwmark <mark>` : (Optional) Firewall mark. Defaults to `32768` (0x8000).
+* `--table-id <id>` : (Optional) Policy routing table ID. Sets up two routing tables: `<id>` (prio 3 for marked traffic) and `<id> + 1` (prio 4 link route). Defaults to `7080`.
+* `--fwmark <mark>` : (Optional) Firewall mark in format `"mark"` or `"mark/bitmask"` (e.g. `0x8000/0x8000`). Defaults to `"0x8000/0x8000"`.
 
 ## Config File Format (`/etc/fitproxy.json`)
 
@@ -59,8 +59,8 @@ fitproxy \
   "listen_dns": "7053",
   "cache": "/tmp/fitproxy_fakeip",
   "setup_network": true,
-  "table_id": 100,
-  "fwmark": 1
+  "table_id": 7080,
+  "fwmark": "0x8000/0x8000"
 }
 ```
 

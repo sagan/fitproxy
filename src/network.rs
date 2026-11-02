@@ -1,17 +1,20 @@
+use ipnet::IpNet;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use tracing::{debug, info};
 
+use crate::config::FwMark;
+
 pub struct NetworkManager {
-    fakeip_range: String,
+    fakeip_range: IpNet,
     listen_port: u16,
     table_id: u32,
-    fwmark: u32,
+    fwmark: FwMark,
     active: bool,
 }
 
 impl NetworkManager {
-    pub fn new(fakeip_range: String, listen_port: u16, table_id: u32, fwmark: u32) -> Self {
+    pub fn new(fakeip_range: IpNet, listen_port: u16, table_id: u32, fwmark: FwMark) -> Self {
         NetworkManager {
             fakeip_range,
             listen_port,
@@ -27,76 +30,116 @@ impl NetworkManager {
         // 1. Idempotent cleanup of any stale rules first
         self.cleanup_internal();
 
+        let is_ipv6 = matches!(self.fakeip_range, IpNet::V6(_));
+        let table_1 = self.table_id;
+        let table_2 = self.table_id + 1;
+        let fwmark_str = self.fwmark.to_ip_rule_str();
+        let fakeip_str = self.fakeip_range.to_string();
+
         // 2. Setup policy routing:
-        // ip route replace local 0.0.0.0/0 dev lo table <table_id>
-        let route_status = Command::new("ip")
-            .args([
-                "route",
-                "replace",
-                "local",
-                "0.0.0.0/0",
-                "dev",
-                "lo",
-                "table",
-                &self.table_id.to_string(),
-            ])
-            .status();
+        // Rule 1: from all fwmark <fwmark> lookup <table_1> (prio 3)
+        // Rule 2: from all lookup <table_2> (prio 4)
+        if is_ipv6 {
+            let rule1_status = Command::new("ip")
+                .args(["-6", "rule", "add", "pref", "3", "fwmark", &fwmark_str, "lookup", &table_1.to_string()])
+                .status();
+            match rule1_status {
+                Ok(s) if s.success() => debug!("Added ip -6 rule pref 3 fwmark {} lookup {}", fwmark_str, table_1),
+                Ok(s) => return Err(format!("Failed to add ip -6 rule pref 3 (exit code: {}). Root / CAP_NET_ADMIN required.", s)),
+                Err(e) => return Err(format!("Failed to execute 'ip -6 rule' command: {}", e)),
+            }
 
-        match route_status {
-            Ok(status) if status.success() => {
-                debug!("Added local route to table {}", self.table_id);
+            let rule2_status = Command::new("ip")
+                .args(["-6", "rule", "add", "pref", "4", "lookup", &table_2.to_string()])
+                .status();
+            match rule2_status {
+                Ok(s) if s.success() => debug!("Added ip -6 rule pref 4 lookup {}", table_2),
+                Ok(s) => return Err(format!("Failed to add ip -6 rule pref 4 (exit code: {}). Root / CAP_NET_ADMIN required.", s)),
+                Err(e) => return Err(format!("Failed to execute 'ip -6 rule' command: {}", e)),
             }
-            Ok(status) => {
-                return Err(format!(
-                    "Failed to add ip route local (exit code: {}). Are you root / CAP_NET_ADMIN?",
-                    status
-                ));
-            }
-            Err(e) => {
-                return Err(format!("Failed to execute 'ip' command: {}", e));
-            }
-        }
 
-        // ip rule add fwmark <fwmark> lookup <table_id>
-        let rule_status = Command::new("ip")
-            .args([
-                "rule",
-                "add",
-                "fwmark",
-                &self.fwmark.to_string(),
-                "lookup",
-                &self.table_id.to_string(),
-            ])
-            .status();
+            // Route in table_1: local default dev lo
+            let route1_status = Command::new("ip")
+                .args(["-6", "route", "replace", "local", "default", "dev", "lo", "table", &table_1.to_string()])
+                .status();
+            match route1_status {
+                Ok(s) if s.success() => debug!("Added ip -6 local route to table {}", table_1),
+                Ok(s) => return Err(format!("Failed to add ip -6 route to table {} (exit code: {})", table_1, s)),
+                Err(e) => return Err(format!("Failed to execute 'ip -6 route' command: {}", e)),
+            }
 
-        match rule_status {
-            Ok(status) if status.success() => {
-                debug!(
-                    "Added ip rule fwmark {} lookup {}",
-                    self.fwmark, self.table_id
-                );
+            // Route in table_2: <fakeip_range> dev lo
+            let route2_status = Command::new("ip")
+                .args(["-6", "route", "replace", &fakeip_str, "dev", "lo", "table", &table_2.to_string()])
+                .status();
+            match route2_status {
+                Ok(s) if s.success() => debug!("Added ip -6 fakeip route {} to table {}", fakeip_str, table_2),
+                Ok(s) => return Err(format!("Failed to add ip -6 route to table {} (exit code: {})", table_2, s)),
+                Err(e) => return Err(format!("Failed to execute 'ip -6 route' command: {}", e)),
             }
-            Ok(status) => {
-                return Err(format!("Failed to add ip rule (exit code: {})", status));
+        } else {
+            let rule1_status = Command::new("ip")
+                .args(["rule", "add", "pref", "3", "fwmark", &fwmark_str, "lookup", &table_1.to_string()])
+                .status();
+            match rule1_status {
+                Ok(s) if s.success() => debug!("Added ip rule pref 3 fwmark {} lookup {}", fwmark_str, table_1),
+                Ok(s) => return Err(format!("Failed to add ip rule pref 3 (exit code: {}). Root / CAP_NET_ADMIN required.", s)),
+                Err(e) => return Err(format!("Failed to execute 'ip rule' command: {}", e)),
             }
-            Err(e) => {
-                return Err(format!("Failed to execute 'ip' command: {}", e));
+
+            let rule2_status = Command::new("ip")
+                .args(["rule", "add", "pref", "4", "lookup", &table_2.to_string()])
+                .status();
+            match rule2_status {
+                Ok(s) if s.success() => debug!("Added ip rule pref 4 lookup {}", table_2),
+                Ok(s) => return Err(format!("Failed to add ip rule pref 4 (exit code: {}). Root / CAP_NET_ADMIN required.", s)),
+                Err(e) => return Err(format!("Failed to execute 'ip rule' command: {}", e)),
+            }
+
+            // Route in table_1: local default dev lo scope host
+            let route1_status = Command::new("ip")
+                .args(["route", "replace", "local", "default", "dev", "lo", "scope", "host", "table", &table_1.to_string()])
+                .status();
+            match route1_status {
+                Ok(s) if s.success() => debug!("Added ip local default route to table {}", table_1),
+                Ok(s) => return Err(format!("Failed to add ip route to table {} (exit code: {})", table_1, s)),
+                Err(e) => return Err(format!("Failed to execute 'ip route' command: {}", e)),
+            }
+
+            // Route in table_2: <fakeip_range> dev lo scope link
+            let route2_status = Command::new("ip")
+                .args(["route", "replace", &fakeip_str, "dev", "lo", "scope", "link", "table", &table_2.to_string()])
+                .status();
+            match route2_status {
+                Ok(s) if s.success() => debug!("Added ip fakeip route {} to table {}", fakeip_str, table_2),
+                Ok(s) => return Err(format!("Failed to add ip route to table {} (exit code: {})", table_2, s)),
+                Err(e) => return Err(format!("Failed to execute 'ip route' command: {}", e)),
             }
         }
 
         // 3. Setup nftables ruleset
+        let proto_family = if is_ipv6 { "ip6" } else { "ip" };
+        let nft_set_mark_expr = self.fwmark.to_nft_set_expr();
+
         let nft_script = format!(
             "table inet fitproxy {{\n\
              \x20   chain prerouting {{\n\
              \x20       type filter hook prerouting priority mangle - 1; policy accept;\n\
-             \x20       ip daddr {} meta l4proto tcp tproxy ip to :{} meta mark set {} accept\n\
+             \x20       {} daddr {} meta l4proto tcp tproxy {} to :{} meta mark set {} accept\n\
              \x20   }}\n\
              \x20   chain output {{\n\
              \x20       type route hook output priority mangle - 1; policy accept;\n\
-             \x20       ip daddr {} meta mark set {} accept\n\
+             \x20       {} daddr {} meta mark set {} accept\n\
              \x20   }}\n\
              }}\n",
-            self.fakeip_range, self.listen_port, self.fwmark, self.fakeip_range, self.fwmark
+            proto_family,
+            fakeip_str,
+            proto_family,
+            self.listen_port,
+            nft_set_mark_expr,
+            proto_family,
+            fakeip_str,
+            nft_set_mark_expr,
         );
 
         let mut child = Command::new("nft")
@@ -142,22 +185,20 @@ impl NetworkManager {
             .args(["delete", "table", "inet", "fitproxy"])
             .output();
 
-        // Delete ip rule
-        let _ = Command::new("ip")
-            .args([
-                "rule",
-                "del",
-                "fwmark",
-                &self.fwmark.to_string(),
-                "lookup",
-                &self.table_id.to_string(),
-            ])
-            .output();
+        let table_1 = self.table_id.to_string();
+        let table_2 = (self.table_id + 1).to_string();
 
-        // Flush ip route table
-        let _ = Command::new("ip")
-            .args(["route", "flush", "table", &self.table_id.to_string()])
-            .output();
+        // IPv4 cleanup
+        let _ = Command::new("ip").args(["rule", "del", "pref", "3"]).output();
+        let _ = Command::new("ip").args(["rule", "del", "pref", "4"]).output();
+        let _ = Command::new("ip").args(["route", "flush", "table", &table_1]).output();
+        let _ = Command::new("ip").args(["route", "flush", "table", &table_2]).output();
+
+        // IPv6 cleanup
+        let _ = Command::new("ip").args(["-6", "rule", "del", "pref", "3"]).output();
+        let _ = Command::new("ip").args(["-6", "rule", "del", "pref", "4"]).output();
+        let _ = Command::new("ip").args(["-6", "route", "flush", "table", &table_1]).output();
+        let _ = Command::new("ip").args(["-6", "route", "flush", "table", &table_2]).output();
     }
 }
 

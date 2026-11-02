@@ -1,9 +1,9 @@
-use ipnet::Ipv4Net;
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,7 +14,7 @@ use crate::rules::RuleSet;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheRecord {
     pub domain: String,
-    pub ip: Ipv4Addr,
+    pub ip: IpAddr,
     #[serde(default)]
     pub ts: u64,
 }
@@ -45,7 +45,7 @@ impl DiskCache {
     }
 
     /// Append a single allocation record to the JSONL log file.
-    pub fn append(&self, domain: &str, ip: Ipv4Addr) -> std::io::Result<()> {
+    pub fn append(&self, domain: &str, ip: IpAddr) -> std::io::Result<()> {
         let _guard = self.writer_lock.lock().unwrap();
 
         if let Some(parent) = self.path.parent() {
@@ -75,15 +75,15 @@ impl DiskCache {
     /// Deduplicates and immediately compacts the cache file on startup.
     pub fn load_and_clean(
         &self,
-        valid_range: &Ipv4Net,
+        valid_range: &IpNet,
         rule_set: &RuleSet,
-        static_fakeips: &HashMap<String, Ipv4Addr>,
-        static_ip_to_domain: &HashMap<Ipv4Addr, String>,
-    ) -> std::io::Result<(HashMap<String, Ipv4Addr>, HashMap<Ipv4Addr, String>)> {
+        static_fakeips: &HashMap<String, IpAddr>,
+        static_ip_to_domain: &HashMap<IpAddr, String>,
+    ) -> std::io::Result<(HashMap<String, IpAddr>, HashMap<IpAddr, String>)> {
         let _guard = self.writer_lock.lock().unwrap();
 
-        let mut domain_to_ip: HashMap<String, Ipv4Addr> = HashMap::new();
-        let mut ip_to_domain: HashMap<Ipv4Addr, String> = HashMap::new();
+        let mut domain_to_ip: HashMap<String, IpAddr> = HashMap::new();
+        let mut ip_to_domain: HashMap<IpAddr, String> = HashMap::new();
 
         if !self.path.exists() {
             if let Some(parent) = self.path.parent() {
@@ -197,12 +197,12 @@ impl DiskCache {
     }
 
     /// Rewrite active records to a temporary file and atomically rename.
-    pub fn compact(&self, active_records: &HashMap<String, Ipv4Addr>) -> std::io::Result<()> {
+    pub fn compact(&self, active_records: &HashMap<String, IpAddr>) -> std::io::Result<()> {
         let _guard = self.writer_lock.lock().unwrap();
         Self::compact_internal(&self.path, active_records)
     }
 
-    fn compact_internal(path: &Path, records: &HashMap<String, Ipv4Addr>) -> std::io::Result<()> {
+    fn compact_internal(path: &Path, records: &HashMap<String, IpAddr>) -> std::io::Result<()> {
         let tmp_path = path.with_extension("tmp");
         if let Some(parent) = tmp_path.parent() {
             fs::create_dir_all(parent)?;
@@ -247,18 +247,18 @@ mod tests {
         let cache_path = temp_dir.join("test_cache.jsonl");
 
         let cache = DiskCache::new(cache_path.clone());
-        let ip1 = Ipv4Addr::from_str("198.18.0.2").unwrap();
-        let ip2 = Ipv4Addr::from_str("198.18.0.3").unwrap();
-        let ip3 = Ipv4Addr::from_str("198.18.0.4").unwrap();
+        let ip1 = IpAddr::from_str("198.18.0.2").unwrap();
+        let ip2 = IpAddr::from_str("198.18.0.3").unwrap();
+        let ip3 = IpAddr::from_str("198.18.0.4").unwrap();
 
         cache.append("example.com", ip1).unwrap();
         cache.append("example.com", ip2).unwrap(); // updated IP for same domain
         cache.append("test.org", ip3).unwrap();
         cache
-            .append("bad.com", Ipv4Addr::from_str("198.18.0.5").unwrap())
+            .append("bad.com", IpAddr::from_str("198.18.0.5").unwrap())
             .unwrap();
 
-        let range = Ipv4Net::from_str("198.18.0.0/15").unwrap();
+        let range = IpNet::from_str("198.18.0.0/15").unwrap();
         let rules = RuleSet::new(vec![
             Rule::parse("example.com=direct").unwrap(),
             Rule::parse("test.org=direct").unwrap(),
@@ -282,6 +282,35 @@ mod tests {
         assert_eq!(ip_to_domain.get(&ip3), Some(&"test.org".to_string()));
 
         // Cleanup
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_cache_ipv6_support() {
+        let temp_dir = std::env::temp_dir().join(format!("fitproxy_test_v6_{}", current_timestamp()));
+        let cache_path = temp_dir.join("test_cache_v6.jsonl");
+
+        let cache = DiskCache::new(cache_path.clone());
+        let ip1 = IpAddr::from_str("fc00::2").unwrap();
+        let ip2 = IpAddr::from_str("fc00::3").unwrap();
+
+        cache.append("example.com", ip1).unwrap();
+        cache.append("test.org", ip2).unwrap();
+
+        let range = IpNet::from_str("fc00::/18").unwrap();
+        let rules = RuleSet::new(vec![
+            Rule::parse("example.com=direct").unwrap(),
+            Rule::parse("test.org=direct").unwrap(),
+        ]);
+
+        let (domain_to_ip, ip_to_domain) = cache
+            .load_and_clean(&range, &rules, &HashMap::new(), &HashMap::new())
+            .unwrap();
+
+        assert_eq!(domain_to_ip.get("example.com"), Some(&ip1));
+        assert_eq!(domain_to_ip.get("test.org"), Some(&ip2));
+        assert_eq!(ip_to_domain.get(&ip1), Some(&"example.com".to_string()));
+
         let _ = fs::remove_dir_all(temp_dir);
     }
 }

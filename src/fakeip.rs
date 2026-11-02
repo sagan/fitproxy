@@ -1,54 +1,71 @@
-use ipnet::Ipv4Net;
+use ipnet::IpNet;
 use parking_lot::RwLock;
 use std::collections::{HashMap, VecDeque};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::cache::DiskCache;
 
+fn u128_to_ip(val: u128, is_ipv6: bool) -> IpAddr {
+    if is_ipv6 {
+        IpAddr::V6(Ipv6Addr::from(val))
+    } else {
+        IpAddr::V4(Ipv4Addr::from(val as u32))
+    }
+}
+
 pub struct FakeIpInner {
-    start_ip: u32,
-    end_ip: u32,
-    cursor: u32,
+    start_ip: u128,
+    end_ip: u128,
+    cursor: u128,
+    is_ipv6: bool,
 
-    static_domain_to_ip: HashMap<String, Ipv4Addr>,
-    static_ip_to_domain: HashMap<Ipv4Addr, String>,
+    static_domain_to_ip: HashMap<String, IpAddr>,
+    static_ip_to_domain: HashMap<IpAddr, String>,
 
-    dynamic_domain_to_ip: HashMap<String, Ipv4Addr>,
-    dynamic_ip_to_domain: HashMap<Ipv4Addr, String>,
+    dynamic_domain_to_ip: HashMap<String, IpAddr>,
+    dynamic_ip_to_domain: HashMap<IpAddr, String>,
 
     // Tracks allocation order for LRU eviction when pool is exhausted
-    alloc_order: VecDeque<Ipv4Addr>,
+    alloc_order: VecDeque<IpAddr>,
     // Active connections per IP to prevent recycling an IP in use
-    active_conns: HashMap<Ipv4Addr, usize>,
+    active_conns: HashMap<IpAddr, usize>,
 }
 
 #[derive(Clone)]
 pub struct FakeIpManager {
     inner: Arc<RwLock<FakeIpInner>>,
-    range: Ipv4Net,
+    range: IpNet,
     cache: Arc<DiskCache>,
 }
 
 impl FakeIpManager {
     pub fn new(
-        range: Ipv4Net,
-        static_fakeips: HashMap<String, Ipv4Addr>,
-        static_ip_to_domain: HashMap<Ipv4Addr, String>,
-        initial_domain_to_ip: HashMap<String, Ipv4Addr>,
-        initial_ip_to_domain: HashMap<Ipv4Addr, String>,
+        range: IpNet,
+        static_fakeips: HashMap<String, IpAddr>,
+        static_ip_to_domain: HashMap<IpAddr, String>,
+        initial_domain_to_ip: HashMap<String, IpAddr>,
+        initial_ip_to_domain: HashMap<IpAddr, String>,
         cache: Arc<DiskCache>,
     ) -> Self {
-        let net_addr = u32::from(range.network());
-        let bcast_addr = u32::from(range.broadcast());
-
-        // Skip network address and broadcast address
-        let start_ip = net_addr + 1;
-        let end_ip = if bcast_addr > start_ip {
-            bcast_addr - 1
-        } else {
-            start_ip
+        let is_ipv6 = matches!(range, IpNet::V6(_));
+        let (start_ip, end_ip) = match range {
+            IpNet::V4(net) => {
+                let net_addr = u32::from(net.network()) as u128;
+                let bcast_addr = u32::from(net.broadcast()) as u128;
+                let s = net_addr + 1;
+                let e = if bcast_addr > s { bcast_addr - 1 } else { s };
+                (s, e)
+            }
+            IpNet::V6(net) => {
+                let net_addr = u128::from_be_bytes(net.network().octets());
+                let bcast_addr = u128::from_be_bytes(net.broadcast().octets());
+                // Skip the subnet router anycast address (RFC 4291)
+                let s = net_addr.saturating_add(1);
+                let e = bcast_addr;
+                (s, e)
+            }
         };
 
         let mut alloc_order = VecDeque::new();
@@ -60,6 +77,7 @@ impl FakeIpManager {
             start_ip,
             end_ip,
             cursor: start_ip,
+            is_ipv6,
             static_domain_to_ip: static_fakeips,
             static_ip_to_domain,
             dynamic_domain_to_ip: initial_domain_to_ip,
@@ -75,12 +93,20 @@ impl FakeIpManager {
         }
     }
 
-    pub fn is_fake_ip(&self, ip: &Ipv4Addr) -> bool {
+    pub fn range(&self) -> &IpNet {
+        &self.range
+    }
+
+    pub fn is_ipv6(&self) -> bool {
+        matches!(self.range, IpNet::V6(_))
+    }
+
+    pub fn is_fake_ip(&self, ip: &IpAddr) -> bool {
         self.range.contains(ip)
     }
 
     /// Look up existing fake IP or allocate a new one dynamically.
-    pub fn lookup_or_allocate(&self, domain: &str) -> Option<Ipv4Addr> {
+    pub fn lookup_or_allocate(&self, domain: &str) -> Option<IpAddr> {
         let domain_norm = domain.trim().to_ascii_lowercase();
 
         // 1. Read lock check
@@ -105,19 +131,25 @@ impl FakeIpManager {
             return Some(ip);
         }
 
-        // Allocate a new IP
-        let total_ips = (inner.end_ip - inner.start_ip + 1) as usize;
+        // Allocate a new IP (cap search attempts to prevent long loops on huge IPv6 subnets)
+        let total_possible = inner.end_ip.saturating_sub(inner.start_ip).saturating_add(1);
+        let max_search = if total_possible > 262_144 {
+            262_144
+        } else {
+            total_possible as usize
+        };
+
         let mut allocated_ip = None;
 
-        for _ in 0..total_ips {
-            let candidate_u32 = inner.cursor;
+        for _ in 0..max_search {
+            let candidate_u128 = inner.cursor;
             inner.cursor = if inner.cursor >= inner.end_ip {
                 inner.start_ip
             } else {
-                inner.cursor + 1
+                inner.cursor.saturating_add(1)
             };
 
-            let candidate_ip = Ipv4Addr::from(candidate_u32);
+            let candidate_ip = u128_to_ip(candidate_u128, inner.is_ipv6);
 
             if !inner.static_ip_to_domain.contains_key(&candidate_ip)
                 && !inner.dynamic_ip_to_domain.contains_key(&candidate_ip)
@@ -182,7 +214,7 @@ impl FakeIpManager {
     }
 
     /// Resolve a fake IP back to its original domain name.
-    pub fn get_domain(&self, ip: &Ipv4Addr) -> Option<String> {
+    pub fn get_domain(&self, ip: &IpAddr) -> Option<String> {
         let inner = self.inner.read();
         if let Some(d) = inner.static_ip_to_domain.get(ip) {
             return Some(d.clone());
@@ -193,12 +225,12 @@ impl FakeIpManager {
         None
     }
 
-    pub fn inc_conn(&self, ip: &Ipv4Addr) {
+    pub fn inc_conn(&self, ip: &IpAddr) {
         let mut inner = self.inner.write();
         *inner.active_conns.entry(*ip).or_insert(0) += 1;
     }
 
-    pub fn dec_conn(&self, ip: &Ipv4Addr) {
+    pub fn dec_conn(&self, ip: &IpAddr) {
         let mut inner = self.inner.write();
         if let Some(count) = inner.active_conns.get_mut(ip) {
             if *count > 0 {

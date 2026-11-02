@@ -76,10 +76,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup system routing and nftables rules if requested
     let mut network_manager = if config.setup_network {
         let mut nm = NetworkManager::new(
-            config.fakeip_range.to_string(),
+            config.fakeip_range,
             config.listen_addr.port(),
             config.table_id,
-            config.fwmark,
+            config.fwmark.clone(),
         );
         if let Err(e) = nm.setup() {
             warn!(

@@ -1,6 +1,6 @@
 use socket2::{Domain, Protocol, Socket, Type};
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -46,10 +46,11 @@ impl TproxyServer {
     }
 
     fn create_transparent_listener(&self) -> io::Result<std::net::TcpListener> {
-        let domain = if self.listen_addr.is_ipv4() {
-            Domain::IPV4
-        } else {
+        let is_ipv6 = self.listen_addr.is_ipv6();
+        let domain = if is_ipv6 {
             Domain::IPV6
+        } else {
+            Domain::IPV4
         };
 
         let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
@@ -58,27 +59,43 @@ impl TproxyServer {
         let _ = socket.set_reuse_port(true);
         socket.set_nonblocking(true)?;
 
+        if is_ipv6 {
+            let _ = socket.set_only_v6(false);
+        }
+
         #[cfg(target_os = "linux")]
         {
             let fd = socket.as_raw_fd();
             let opt: libc::c_int = 1;
-            let ret = unsafe {
-                libc::setsockopt(
+            unsafe {
+                let ret_v4 = libc::setsockopt(
                     fd,
                     libc::SOL_IP,
                     libc::IP_TRANSPARENT,
                     &opt as *const _ as *const libc::c_void,
                     std::mem::size_of_val(&opt) as libc::socklen_t,
-                )
-            };
-            if ret != 0 {
-                let err = io::Error::last_os_error();
-                warn!(
-                    "Failed to set IP_TRANSPARENT on socket (CAP_NET_ADMIN required): {}. Continuing anyway...",
-                    err
                 );
-            } else {
-                debug!("Enabled IP_TRANSPARENT on TPROXY listening socket");
+                let ret_v6 = if is_ipv6 {
+                    libc::setsockopt(
+                        fd,
+                        libc::SOL_IPV6,
+                        libc::IPV6_TRANSPARENT,
+                        &opt as *const _ as *const libc::c_void,
+                        std::mem::size_of_val(&opt) as libc::socklen_t,
+                    )
+                } else {
+                    0
+                };
+
+                if ret_v4 != 0 && ret_v6 != 0 {
+                    let err = io::Error::last_os_error();
+                    warn!(
+                        "Failed to set IP_TRANSPARENT on socket (CAP_NET_ADMIN required): {}. Continuing anyway...",
+                        err
+                    );
+                } else {
+                    debug!("Enabled IP_TRANSPARENT on TPROXY listening socket");
+                }
             }
         }
 
@@ -97,13 +114,7 @@ impl TproxyServer {
             }
         };
 
-        let dst_ip = match orig_dst.ip() {
-            IpAddr::V4(ip) => ip,
-            IpAddr::V6(_) => {
-                debug!("Non-IPv4 connection received from {}: dropping", peer_addr);
-                return;
-            }
-        };
+        let dst_ip = orig_dst.ip();
 
         // Original request dst ip MUST be in fake ip range
         if !self.fakeip_manager.is_fake_ip(&dst_ip) {
@@ -144,7 +155,10 @@ impl TproxyServer {
             Target::Direct => {
                 self.fakeip_manager.inc_conn(&dst_ip);
                 if let Err(e) = handle_direct(stream, &domain, dst_port).await {
-                    debug!("Direct outbound error for {}:{}: {}", domain, dst_port, e);
+                    debug!(
+                        "Direct outbound error for {}:{}: {}",
+                        domain, dst_port, e
+                    );
                 }
                 self.fakeip_manager.dec_conn(&dst_ip);
             }
