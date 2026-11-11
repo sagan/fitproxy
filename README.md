@@ -91,9 +91,34 @@ cargo build --release
 ./build.sh aarch64-unknown-linux-musl
 ```
 
+### Docker
+
+#### Build Docker Image Locally
+
+```bash
+docker build -t fitproxy .
+```
+
+#### Run with Docker
+
+```bash
+# Run with host networking and net admin capability (needed for TPROXY and routing)
+docker run -d \
+  --name fitproxy \
+  --network host \
+  --cap-add=NET_ADMIN \
+  -v /etc/fitproxy.json:/etc/fitproxy.json:ro \
+  ghcr.io/<owner>/fitproxy:latest \
+  -c /etc/fitproxy.json
+```
+
 ### GitHub Actions Release
 
-Pushing any tag starting with `v*` (e.g. `v0.1.0`) triggers `.github/workflows/release.yml`, building and publishing statically linked musl binaries to GitHub Releases:
+Pushing any tag starting with `v*` (e.g. `v0.1.0`) triggers `.github/workflows/release.yml`:
 
-- `fitproxy-x86_64-unknown-linux-musl`
-- `fitproxy-aarch64-unknown-linux-musl`
+1. **GitHub Releases**: Builds and publishes statically linked musl binaries with SHA256 checksums:
+   - `fitproxy-x86_64-unknown-linux-musl`
+   - `fitproxy-aarch64-unknown-linux-musl`
+2. **GitHub Packages**: Builds and publishes multi-arch container images (`linux/amd64`, `linux/arm64`) to GitHub Container Registry:
+   - `ghcr.io/<owner>/fitproxy:<tag>`
+   - `ghcr.io/<owner>/fitproxy:latest`
