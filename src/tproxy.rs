@@ -22,6 +22,8 @@ pub struct TproxyServer {
     egress_mark: Option<u32>,
 }
 
+type UdpSessionMap = Arc<parking_lot::Mutex<HashMap<(SocketAddr, SocketAddr), tokio::sync::mpsc::Sender<Vec<u8>>>>>;
+
 impl TproxyServer {
     pub fn new(
         listen_addr: SocketAddr,
@@ -94,9 +96,7 @@ impl TproxyServer {
         let socket = UdpSocket::from_std(std_socket)?;
         info!("TPROXY UDP server listening on {}", self.listen_addr);
 
-        let sessions: Arc<
-            parking_lot::Mutex<HashMap<(SocketAddr, SocketAddr), tokio::sync::mpsc::Sender<Vec<u8>>>>,
-        > = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let sessions: UdpSessionMap = Arc::new(parking_lot::Mutex::new(HashMap::new()));
 
         // Periodic pruning of closed / idle sessions
         let prune_sessions = sessions.clone();
@@ -137,9 +137,7 @@ impl TproxyServer {
         peer_addr: SocketAddr,
         orig_dst: SocketAddr,
         payload: Vec<u8>,
-        sessions: &Arc<
-            parking_lot::Mutex<HashMap<(SocketAddr, SocketAddr), tokio::sync::mpsc::Sender<Vec<u8>>>>,
-        >,
+        sessions: &UdpSessionMap,
     ) {
         // Fast path: send to active session
         {

@@ -286,29 +286,56 @@ fn test_nft_rules_syntax_validation() {
 
     let script = nm.generate_nft_script();
 
-    // Verify script contains iifname clause and egress mark exclusion
+    // Verify script contains iifname clause, daddr sets, protocols, and egress mark exclusion
     assert!(script.contains("meta mark and 0x10000 == 0x10000 accept"));
     assert!(script.contains("iifname { \"eth0\", \"eth1\" }"));
+    assert!(script.contains("ip daddr { 198.18.0.0/15, 0.0.0.0/0 }"));
+    assert!(script.contains("ip6 daddr { ::/0 }"));
+    assert!(script.contains("meta l4proto { tcp, udp }"));
 
-    // Verify syntax using `nft -c -f -`
-    let mut child = Command::new("nft")
+    // Verify syntax using `nft -c -f -` if available and permitted
+    let mut child = match Command::new("nft")
         .args(["-c", "-f", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn nft -c");
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("nft command not available ({}), skipping nft syntax check", e);
+            return;
+        }
+    };
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(script.as_bytes()).unwrap();
+        let _ = stdin.write_all(script.as_bytes());
     }
 
-    let output = child.wait_with_output().expect("wait nft -c");
-    assert!(
-        output.status.success(),
-        "nft script syntax check failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("Failed to wait for nft: {}, skipping", e);
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // In unprivileged test environments (e.g. GitHub Actions CI runners), nft -c fails
+        // netlink cache initialization with "Operation not permitted" due to lack of CAP_NET_ADMIN.
+        if stderr.contains("Operation not permitted")
+            || stderr.contains("cache initialization failed")
+            || stderr.contains("Permission denied")
+        {
+            eprintln!(
+                "Skipping nft syntax validation: environment lacks netlink permissions ({})",
+                stderr.trim()
+            );
+            return;
+        }
+        panic!("nft script syntax check failed: {}", stderr);
+    }
 }
 
 #[tokio::test]
