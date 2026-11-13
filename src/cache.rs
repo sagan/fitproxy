@@ -287,7 +287,8 @@ mod tests {
 
     #[test]
     fn test_cache_ipv6_support() {
-        let temp_dir = std::env::temp_dir().join(format!("fitproxy_test_v6_{}", current_timestamp()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fitproxy_test_v6_{}", current_timestamp()));
         let cache_path = temp_dir.join("test_cache_v6.jsonl");
 
         let cache = DiskCache::new(cache_path.clone());

@@ -159,9 +159,7 @@ impl DnsServer {
                                     question.qname.clone(),
                                     CLASS::IN,
                                     3, // 3-second TTL for fake IP
-                                    RData::A(A {
-                                        address: v4.into(),
-                                    }),
+                                    RData::A(A { address: v4.into() }),
                                 );
                                 reply.answers.push(record);
                             }
@@ -182,14 +180,15 @@ impl DnsServer {
                                     question.qname.clone(),
                                     CLASS::IN,
                                     3, // 3-second TTL for fake IP
-                                    RData::AAAA(AAAA {
-                                        address: v6.into(),
-                                    }),
+                                    RData::AAAA(AAAA { address: v6.into() }),
                                 );
                                 reply.answers.push(record);
                             }
                             IpAddr::V4(_) => {
-                                debug!("DNS AAAA query for IPv4-pool domain '{}' -> NODATA", domain);
+                                debug!(
+                                    "DNS AAAA query for IPv4-pool domain '{}' -> NODATA",
+                                    domain
+                                );
                             }
                         }
                     } else {

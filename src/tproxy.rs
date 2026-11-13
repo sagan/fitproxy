@@ -22,7 +22,8 @@ pub struct TproxyServer {
     egress_mark: Option<u32>,
 }
 
-type UdpSessionMap = Arc<parking_lot::Mutex<HashMap<(SocketAddr, SocketAddr), tokio::sync::mpsc::Sender<Vec<u8>>>>>;
+type UdpSessionMap =
+    Arc<parking_lot::Mutex<HashMap<(SocketAddr, SocketAddr), tokio::sync::mpsc::Sender<Vec<u8>>>>>;
 
 impl TproxyServer {
     pub fn new(
@@ -81,7 +82,8 @@ impl TproxyServer {
                     let rules = self.rules.clone();
                     let egress_mark = self.egress_mark;
                     tokio::spawn(async move {
-                        handle_tcp_connection(stream, peer_addr, fakeip_mgr, rules, egress_mark).await;
+                        handle_tcp_connection(stream, peer_addr, fakeip_mgr, rules, egress_mark)
+                            .await;
                     });
                 }
                 Err(e) => {
@@ -115,9 +117,10 @@ impl TproxyServer {
                 continue;
             }
 
-            let (n, peer_addr, orig_dst) = match socket.try_io(tokio::io::Interest::READABLE, || {
-                recv_msg_with_orig_dst(socket.as_raw_fd(), &mut buf, self.listen_addr)
-            }) {
+            let (n, peer_addr, orig_dst) = match socket
+                .try_io(tokio::io::Interest::READABLE, || {
+                    recv_msg_with_orig_dst(socket.as_raw_fd(), &mut buf, self.listen_addr)
+                }) {
                 Ok(res) => res,
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(e) => {
@@ -198,20 +201,17 @@ impl TproxyServer {
                 );
             }
             Target::Direct => {
-                let reply_socket = match create_transparent_reply_socket(
-                    orig_dst,
-                    peer_addr,
-                    self.egress_mark,
-                ) {
-                    Ok(s) => Arc::new(s),
-                    Err(e) => {
-                        debug!(
-                            "Failed to create transparent UDP reply socket for {} -> {}: {}",
-                            orig_dst, peer_addr, e
-                        );
-                        return;
-                    }
-                };
+                let reply_socket =
+                    match create_transparent_reply_socket(orig_dst, peer_addr, self.egress_mark) {
+                        Ok(s) => Arc::new(s),
+                        Err(e) => {
+                            debug!(
+                                "Failed to create transparent UDP reply socket for {} -> {}: {}",
+                                orig_dst, peer_addr, e
+                            );
+                            return;
+                        }
+                    };
 
                 let real_dst = if is_fake {
                     match tokio::net::lookup_host((target_host.as_str(), dst_port)).await {
@@ -265,20 +265,17 @@ impl TproxyServer {
                 addr: proxy_addr,
                 udp: true,
             } => {
-                let reply_socket = match create_transparent_reply_socket(
-                    orig_dst,
-                    peer_addr,
-                    self.egress_mark,
-                ) {
-                    Ok(s) => Arc::new(s),
-                    Err(e) => {
-                        debug!(
-                            "Failed to create transparent UDP reply socket for {} -> {}: {}",
-                            orig_dst, peer_addr, e
-                        );
-                        return;
-                    }
-                };
+                let reply_socket =
+                    match create_transparent_reply_socket(orig_dst, peer_addr, self.egress_mark) {
+                        Ok(s) => Arc::new(s),
+                        Err(e) => {
+                            debug!(
+                                "Failed to create transparent UDP reply socket for {} -> {}: {}",
+                                orig_dst, peer_addr, e
+                            );
+                            return;
+                        }
+                    };
 
                 let (tx, rx) = tokio::sync::mpsc::channel(64);
                 let _ = tx.try_send(payload);
@@ -309,11 +306,7 @@ impl TproxyServer {
 
     fn create_transparent_listener(&self) -> io::Result<std::net::TcpListener> {
         let is_ipv6 = self.listen_addr.is_ipv6();
-        let domain = if is_ipv6 {
-            Domain::IPV6
-        } else {
-            Domain::IPV4
-        };
+        let domain = if is_ipv6 { Domain::IPV6 } else { Domain::IPV4 };
 
         let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
         socket.set_reuse_address(true)?;
@@ -368,11 +361,7 @@ impl TproxyServer {
 
     fn create_transparent_udp_listener(&self) -> io::Result<std::net::UdpSocket> {
         let is_ipv6 = self.listen_addr.is_ipv6();
-        let domain = if is_ipv6 {
-            Domain::IPV6
-        } else {
-            Domain::IPV4
-        };
+        let domain = if is_ipv6 { Domain::IPV6 } else { Domain::IPV4 };
 
         let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
         socket.set_reuse_address(true)?;

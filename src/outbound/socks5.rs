@@ -314,7 +314,10 @@ pub async fn handle_socks5_proxy(
         }
     }
 
-    debug!("SOCKS5 proxy handshake established for {}:{}", target_host, port);
+    debug!(
+        "SOCKS5 proxy handshake established for {}:{}",
+        target_host, port
+    );
     let _ = copy_bidirectional(&mut client_stream, &mut proxy_stream).await?;
     Ok(())
 }

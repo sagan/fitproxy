@@ -53,7 +53,10 @@ pub async fn handle_http_proxy(
         ));
     }
 
-    debug!("HTTP proxy handshake established for {}:{}", target_host, port);
+    debug!(
+        "HTTP proxy handshake established for {}:{}",
+        target_host, port
+    );
     let _ = copy_bidirectional(&mut client_stream, &mut proxy_stream).await?;
     Ok(())
 }

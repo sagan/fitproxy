@@ -11,8 +11,8 @@ pub mod socks5;
 pub use direct::handle_direct;
 pub use http::handle_http_proxy;
 pub use socks5::{
-    decode_socks5_udp_packet, encode_socks5_udp_packet, handle_socks5_proxy,
-    socks5_udp_associate, Socks5UdpAssociation,
+    Socks5UdpAssociation, decode_socks5_udp_packet, encode_socks5_udp_packet, handle_socks5_proxy,
+    socks5_udp_associate,
 };
 
 pub fn format_authority(host: &str, port: u16) -> String {
@@ -32,10 +32,7 @@ pub async fn connect_host(
     connect_tcp(&authority, egress_mark).await
 }
 
-pub async fn connect_tcp(
-    target: &str,
-    egress_mark: Option<u32>,
-) -> io::Result<TcpStream> {
+pub async fn connect_tcp(target: &str, egress_mark: Option<u32>) -> io::Result<TcpStream> {
     let addrs = tokio::net::lookup_host(target).await?;
     let mut last_err = None;
 
@@ -60,7 +57,10 @@ pub async fn connect_tcp(
                 );
                 if ret != 0 {
                     let err = io::Error::last_os_error();
-                    debug!("Failed to set SO_MARK 0x{:x} on egress socket: {}", mark, err);
+                    debug!(
+                        "Failed to set SO_MARK 0x{:x} on egress socket: {}",
+                        mark, err
+                    );
                 } else {
                     debug!("Set SO_MARK 0x{:x} on egress socket", mark);
                 }

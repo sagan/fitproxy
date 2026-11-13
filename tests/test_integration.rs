@@ -169,9 +169,7 @@ fn test_dns_server_ipv6_query_handling() {
         disk_cache,
     );
 
-    let rules = RuleSet::new(vec![
-        Rule::parse("v6host.com=direct").unwrap(),
-    ]);
+    let rules = RuleSet::new(vec![Rule::parse("v6host.com=direct").unwrap()]);
 
     let dns_server = DnsServer::new("127.0.0.1:0".parse().unwrap(), mgr.clone(), rules);
 
@@ -216,23 +214,32 @@ fn test_dns_server_ipv6_query_handling() {
 
 #[test]
 fn test_config_interface_and_egress_mark_parsing() {
-    use fitproxy::config::{CliArgs, AppConfig};
     use clap::Parser;
+    use fitproxy::config::{AppConfig, CliArgs};
 
     // 1. CLI parsing
     let cli = CliArgs::parse_from([
         "fitproxy",
-        "--rule", "0.0.0.0/0=direct",
-        "--interface", "eth0,eth1",
-        "--egress-mark", "0x20000/0x20000",
+        "--rule",
+        "0.0.0.0/0=direct",
+        "--interface",
+        "eth0,eth1",
+        "--egress-mark",
+        "0x20000/0x20000",
         "--no-network-setup",
     ]);
 
     let config = AppConfig::load_and_merge(cli).expect("load config");
-    assert_eq!(config.interfaces, vec!["eth0".to_string(), "eth1".to_string()]);
+    assert_eq!(
+        config.interfaces,
+        vec!["eth0".to_string(), "eth1".to_string()]
+    );
     assert_eq!(config.egress_mark.mark, 0x20000);
     assert_eq!(config.egress_mark.mask, Some(0x20000));
-    assert_eq!(config.rules.allowed_ip_cidrs(), vec!["0.0.0.0/0".parse::<IpNet>().unwrap()]);
+    assert_eq!(
+        config.rules.allowed_ip_cidrs(),
+        vec!["0.0.0.0/0".parse::<IpNet>().unwrap()]
+    );
 
     // 2. Config file parsing
     let temp_dir = std::env::temp_dir().join("fitproxy_test_config_json");
@@ -248,13 +255,20 @@ fn test_config_interface_and_egress_mark_parsing() {
 
     let cli2 = CliArgs::parse_from([
         "fitproxy",
-        "-c", config_file.to_str().unwrap(),
+        "-c",
+        config_file.to_str().unwrap(),
         "--no-network-setup",
     ]);
     let config2 = AppConfig::load_and_merge(cli2).expect("load config2");
-    assert_eq!(config2.interfaces, vec!["ens33".to_string(), "wg0".to_string()]);
+    assert_eq!(
+        config2.interfaces,
+        vec!["ens33".to_string(), "wg0".to_string()]
+    );
     assert_eq!(config2.egress_mark.mark, 0x10000);
-    assert_eq!(config2.rules.allowed_ip_cidrs(), vec!["10.0.0.0/8".parse::<IpNet>().unwrap()]);
+    assert_eq!(
+        config2.rules.allowed_ip_cidrs(),
+        vec!["10.0.0.0/8".parse::<IpNet>().unwrap()]
+    );
 
     let _ = fs::remove_dir_all(temp_dir);
 }
@@ -269,10 +283,7 @@ fn test_nft_rules_syntax_validation() {
     let fakeip = "198.18.0.0/15".parse().unwrap();
     let fwmark = FwMark::parse("0x8000/0x8000").unwrap();
     let egress_mark = FwMark::parse("0x10000/0x10000").unwrap();
-    let allowed_cidrs = vec![
-        "0.0.0.0/0".parse().unwrap(),
-        "::/0".parse().unwrap(),
-    ];
+    let allowed_cidrs = vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()];
 
     let nm = NetworkManager::new(
         fakeip,
@@ -289,8 +300,8 @@ fn test_nft_rules_syntax_validation() {
     // Verify script contains iifname clause, daddr sets, protocols, and egress mark exclusion
     assert!(script.contains("meta mark and 0x10000 == 0x10000 accept"));
     assert!(script.contains("iifname { \"eth0\", \"eth1\" }"));
-    assert!(script.contains("ip daddr { 198.18.0.0/15, 0.0.0.0/0 }"));
-    assert!(script.contains("ip6 daddr { ::/0 }"));
+    assert!(script.contains("fib daddr type != local ip daddr { 198.18.0.0/15, 0.0.0.0/0 }"));
+    assert!(script.contains("fib daddr type != local ip6 daddr { ::/0 }"));
     assert!(script.contains("meta l4proto { tcp, udp }"));
 
     // Verify syntax using `nft -c -f -` if available and permitted
@@ -303,7 +314,10 @@ fn test_nft_rules_syntax_validation() {
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("nft command not available ({}), skipping nft syntax check", e);
+            eprintln!(
+                "nft command not available ({}), skipping nft syntax check",
+                e
+            );
             return;
         }
     };
@@ -374,11 +388,17 @@ async fn test_tproxy_server_direct_ip_forwarding() {
         Rule::parse("192.168.0.0/16=reject").unwrap(),
     ]);
 
-    assert_eq!(rules.match_ip(&echo_addr.ip()), &fitproxy::rules::Target::Direct);
+    assert_eq!(
+        rules.match_ip(&echo_addr.ip()),
+        &fitproxy::rules::Target::Direct
+    );
     let reject_ip: IpAddr = "192.168.1.1".parse().unwrap();
     assert_eq!(rules.match_ip(&reject_ip), &fitproxy::rules::Target::Reject);
     let unknown_ip: IpAddr = "8.8.8.8".parse().unwrap();
-    assert_eq!(rules.match_ip(&unknown_ip), &fitproxy::rules::Target::Reject);
+    assert_eq!(
+        rules.match_ip(&unknown_ip),
+        &fitproxy::rules::Target::Reject
+    );
 
     // Test handle_direct with egress_mark:
     // Create an in-memory client-server stream pair
@@ -386,7 +406,9 @@ async fn test_tproxy_server_direct_ip_forwarding() {
     let client_port = client_listener.local_addr().unwrap().port();
 
     let client_connect_task = tokio::spawn(async move {
-        let mut client_side = TcpStream::connect(("127.0.0.1", client_port)).await.unwrap();
+        let mut client_side = TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
         client_side.write_all(b"ping-pong").await.unwrap();
         let mut resp = [0u8; 9];
         client_side.read_exact(&mut resp).await.unwrap();
@@ -395,9 +417,14 @@ async fn test_tproxy_server_direct_ip_forwarding() {
 
     let (server_side, _) = client_listener.accept().await.unwrap();
     let direct_task = tokio::spawn(async move {
-        handle_direct(server_side, &echo_addr.ip().to_string(), echo_addr.port(), Some(0x10000))
-            .await
-            .expect("handle_direct to echo server");
+        handle_direct(
+            server_side,
+            &echo_addr.ip().to_string(),
+            echo_addr.port(),
+            Some(0x10000),
+        )
+        .await
+        .expect("handle_direct to echo server");
     });
 
     client_connect_task.await.unwrap();
@@ -445,7 +472,9 @@ async fn test_socks5_udp_parameter_and_rules() {
 
 #[tokio::test]
 async fn test_socks5_udp_associate_protocol() {
-    use fitproxy::outbound::{decode_socks5_udp_packet, encode_socks5_udp_packet, socks5_udp_associate};
+    use fitproxy::outbound::{
+        decode_socks5_udp_packet, encode_socks5_udp_packet, socks5_udp_associate,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, UdpSocket};
 
@@ -495,7 +524,9 @@ async fn test_socks5_udp_associate_protocol() {
     });
 
     // 3. Test socks5_udp_associate client
-    let assoc = socks5_udp_associate(&socks5_addr.to_string(), None).await.expect("socks5 udp associate");
+    let assoc = socks5_udp_associate(&socks5_addr.to_string(), None)
+        .await
+        .expect("socks5 udp associate");
     assert_eq!(assoc.relay_addr, relay_addr);
 
     // 4. Send UDP packet to relay endpoint

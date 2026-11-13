@@ -13,7 +13,8 @@ pub fn parse_u32_hex_or_dec(s: &str) -> Result<u32, String> {
     if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         u32::from_str_radix(hex, 16).map_err(|e| format!("Invalid hex number '{}': {}", s, e))
     } else {
-        s.parse::<u32>().map_err(|e| format!("Invalid number '{}': {}", s, e))
+        s.parse::<u32>()
+            .map_err(|e| format!("Invalid number '{}': {}", s, e))
     }
 }
 
@@ -166,7 +167,11 @@ pub struct AppConfig {
     pub egress_mark: FwMark,
 }
 
-pub fn parse_socket_addr(s: &str, default_port: u16, prefer_ipv6: bool) -> Result<SocketAddr, String> {
+pub fn parse_socket_addr(
+    s: &str,
+    default_port: u16,
+    prefer_ipv6: bool,
+) -> Result<SocketAddr, String> {
     let s = s.trim();
     if let Ok(port) = s.parse::<u16>() {
         return if prefer_ipv6 {

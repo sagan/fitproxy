@@ -132,7 +132,10 @@ impl FakeIpManager {
         }
 
         // Allocate a new IP (cap search attempts to prevent long loops on huge IPv6 subnets)
-        let total_possible = inner.end_ip.saturating_sub(inner.start_ip).saturating_add(1);
+        let total_possible = inner
+            .end_ip
+            .saturating_sub(inner.start_ip)
+            .saturating_add(1);
         let max_search = if total_possible > 262_144 {
             262_144
         } else {

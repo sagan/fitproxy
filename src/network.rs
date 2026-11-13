@@ -68,8 +68,10 @@ impl NetworkManager {
         let nft_set_mark_expr = self.fwmark.to_nft_set_expr();
         let egress_mask = self.egress_mark.mask.unwrap_or(self.egress_mark.mark);
         let egress_val = self.egress_mark.mark & egress_mask;
-        let nft_egress_exclude_expr =
-            format!("meta mark and 0x{:x} == 0x{:x} accept", egress_mask, egress_val);
+        let nft_egress_exclude_expr = format!(
+            "meta mark and 0x{:x} == 0x{:x} accept",
+            egress_mask, egress_val
+        );
 
         let iif_clause = if !self.interfaces.is_empty() {
             let formatted_ifaces = self
@@ -93,7 +95,7 @@ impl NetworkManager {
                 .collect::<Vec<_>>()
                 .join(", ");
             prerouting_rules.push(format!(
-                "        {}ip daddr {{ {} }} meta l4proto {{ tcp, udp }} tproxy ip to :{} meta mark set {} accept\n",
+                "        {}fib daddr type != local ip daddr {{ {} }} meta l4proto {{ tcp, udp }} tproxy ip to :{} meta mark set {} accept\n",
                 iif_clause, v4_set, self.listen_port, nft_set_mark_expr
             ));
         }
@@ -105,7 +107,7 @@ impl NetworkManager {
                 .collect::<Vec<_>>()
                 .join(", ");
             prerouting_rules.push(format!(
-                "        {}ip6 daddr {{ {} }} meta l4proto {{ tcp, udp }} tproxy ip6 to :{} meta mark set {} accept\n",
+                "        {}fib daddr type != local ip6 daddr {{ {} }} meta l4proto {{ tcp, udp }} tproxy ip6 to :{} meta mark set {} accept\n",
                 iif_clause, v6_set, self.listen_port, nft_set_mark_expr
             ));
         }
@@ -120,7 +122,7 @@ impl NetworkManager {
                 .collect::<Vec<_>>()
                 .join(", ");
             output_rules.push(format!(
-                "        ip daddr {{ {} }} meta mark set {} accept\n",
+                "        fib daddr type != local ip daddr {{ {} }} meta mark set {} accept\n",
                 v4_set, nft_set_mark_expr
             ));
         }
@@ -132,7 +134,7 @@ impl NetworkManager {
                 .collect::<Vec<_>>()
                 .join(", ");
             output_rules.push(format!(
-                "        ip6 daddr {{ {} }} meta mark set {} accept\n",
+                "        fib daddr type != local ip6 daddr {{ {} }} meta mark set {} accept\n",
                 v6_set, nft_set_mark_expr
             ));
         }
@@ -194,60 +196,158 @@ impl NetworkManager {
         // Rule 2: from all lookup <table_2> (prio 4)
         if need_v6 {
             let rule1_status = Command::new("ip")
-                .args(["-6", "rule", "add", "pref", "3", "fwmark", &fwmark_str, "lookup", &table_1.to_string()])
+                .args([
+                    "-6",
+                    "rule",
+                    "add",
+                    "pref",
+                    "3",
+                    "fwmark",
+                    &fwmark_str,
+                    "lookup",
+                    &table_1.to_string(),
+                ])
                 .status();
             match rule1_status {
-                Ok(s) if s.success() => debug!("Added ip -6 rule pref 3 fwmark {} lookup {}", fwmark_str, table_1),
-                Ok(s) => return Err(format!("Failed to add ip -6 rule pref 3 (exit code: {}). Root / CAP_NET_ADMIN required.", s)),
+                Ok(s) if s.success() => debug!(
+                    "Added ip -6 rule pref 3 fwmark {} lookup {}",
+                    fwmark_str, table_1
+                ),
+                Ok(s) => {
+                    return Err(format!(
+                        "Failed to add ip -6 rule pref 3 (exit code: {}). Root / CAP_NET_ADMIN required.",
+                        s
+                    ));
+                }
                 Err(e) => return Err(format!("Failed to execute 'ip -6 rule' command: {}", e)),
             }
 
             let route1_status = Command::new("ip")
-                .args(["-6", "route", "replace", "local", "default", "dev", "lo", "table", &table_1.to_string()])
+                .args([
+                    "-6",
+                    "route",
+                    "replace",
+                    "local",
+                    "default",
+                    "dev",
+                    "lo",
+                    "table",
+                    &table_1.to_string(),
+                ])
                 .status();
             match route1_status {
                 Ok(s) if s.success() => debug!("Added ip -6 local route to table {}", table_1),
-                Ok(s) => return Err(format!("Failed to add ip -6 route to table {} (exit code: {})", table_1, s)),
+                Ok(s) => {
+                    return Err(format!(
+                        "Failed to add ip -6 route to table {} (exit code: {})",
+                        table_1, s
+                    ));
+                }
                 Err(e) => return Err(format!("Failed to execute 'ip -6 route' command: {}", e)),
             }
 
             if matches!(self.fakeip_range, IpNet::V6(_)) {
                 let rule2_status = Command::new("ip")
-                    .args(["-6", "rule", "add", "pref", "4", "lookup", &table_2.to_string()])
+                    .args([
+                        "-6",
+                        "rule",
+                        "add",
+                        "pref",
+                        "4",
+                        "lookup",
+                        &table_2.to_string(),
+                    ])
                     .status();
                 match rule2_status {
                     Ok(s) if s.success() => debug!("Added ip -6 rule pref 4 lookup {}", table_2),
-                    Ok(s) => return Err(format!("Failed to add ip -6 rule pref 4 (exit code: {}). Root / CAP_NET_ADMIN required.", s)),
+                    Ok(s) => {
+                        return Err(format!(
+                            "Failed to add ip -6 rule pref 4 (exit code: {}). Root / CAP_NET_ADMIN required.",
+                            s
+                        ));
+                    }
                     Err(e) => return Err(format!("Failed to execute 'ip -6 rule' command: {}", e)),
                 }
 
                 let route2_status = Command::new("ip")
-                    .args(["-6", "route", "replace", &fakeip_str, "dev", "lo", "table", &table_2.to_string()])
+                    .args([
+                        "-6",
+                        "route",
+                        "replace",
+                        &fakeip_str,
+                        "dev",
+                        "lo",
+                        "table",
+                        &table_2.to_string(),
+                    ])
                     .status();
                 match route2_status {
-                    Ok(s) if s.success() => debug!("Added ip -6 fakeip route {} to table {}", fakeip_str, table_2),
-                    Ok(s) => return Err(format!("Failed to add ip -6 route to table {} (exit code: {})", table_2, s)),
-                    Err(e) => return Err(format!("Failed to execute 'ip -6 route' command: {}", e)),
+                    Ok(s) if s.success() => debug!(
+                        "Added ip -6 fakeip route {} to table {}",
+                        fakeip_str, table_2
+                    ),
+                    Ok(s) => {
+                        return Err(format!(
+                            "Failed to add ip -6 route to table {} (exit code: {})",
+                            table_2, s
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(format!("Failed to execute 'ip -6 route' command: {}", e));
+                    }
                 }
             }
         }
 
         if need_v4 {
             let rule1_status = Command::new("ip")
-                .args(["rule", "add", "pref", "3", "fwmark", &fwmark_str, "lookup", &table_1.to_string()])
+                .args([
+                    "rule",
+                    "add",
+                    "pref",
+                    "3",
+                    "fwmark",
+                    &fwmark_str,
+                    "lookup",
+                    &table_1.to_string(),
+                ])
                 .status();
             match rule1_status {
-                Ok(s) if s.success() => debug!("Added ip rule pref 3 fwmark {} lookup {}", fwmark_str, table_1),
-                Ok(s) => return Err(format!("Failed to add ip rule pref 3 (exit code: {}). Root / CAP_NET_ADMIN required.", s)),
+                Ok(s) if s.success() => debug!(
+                    "Added ip rule pref 3 fwmark {} lookup {}",
+                    fwmark_str, table_1
+                ),
+                Ok(s) => {
+                    return Err(format!(
+                        "Failed to add ip rule pref 3 (exit code: {}). Root / CAP_NET_ADMIN required.",
+                        s
+                    ));
+                }
                 Err(e) => return Err(format!("Failed to execute 'ip rule' command: {}", e)),
             }
 
             let route1_status = Command::new("ip")
-                .args(["route", "replace", "local", "default", "dev", "lo", "scope", "host", "table", &table_1.to_string()])
+                .args([
+                    "route",
+                    "replace",
+                    "local",
+                    "default",
+                    "dev",
+                    "lo",
+                    "scope",
+                    "host",
+                    "table",
+                    &table_1.to_string(),
+                ])
                 .status();
             match route1_status {
                 Ok(s) if s.success() => debug!("Added ip local default route to table {}", table_1),
-                Ok(s) => return Err(format!("Failed to add ip route to table {} (exit code: {})", table_1, s)),
+                Ok(s) => {
+                    return Err(format!(
+                        "Failed to add ip route to table {} (exit code: {})",
+                        table_1, s
+                    ));
+                }
                 Err(e) => return Err(format!("Failed to execute 'ip route' command: {}", e)),
             }
 
@@ -257,16 +357,38 @@ impl NetworkManager {
                     .status();
                 match rule2_status {
                     Ok(s) if s.success() => debug!("Added ip rule pref 4 lookup {}", table_2),
-                    Ok(s) => return Err(format!("Failed to add ip rule pref 4 (exit code: {}). Root / CAP_NET_ADMIN required.", s)),
+                    Ok(s) => {
+                        return Err(format!(
+                            "Failed to add ip rule pref 4 (exit code: {}). Root / CAP_NET_ADMIN required.",
+                            s
+                        ));
+                    }
                     Err(e) => return Err(format!("Failed to execute 'ip rule' command: {}", e)),
                 }
 
                 let route2_status = Command::new("ip")
-                    .args(["route", "replace", &fakeip_str, "dev", "lo", "scope", "link", "table", &table_2.to_string()])
+                    .args([
+                        "route",
+                        "replace",
+                        &fakeip_str,
+                        "dev",
+                        "lo",
+                        "scope",
+                        "link",
+                        "table",
+                        &table_2.to_string(),
+                    ])
                     .status();
                 match route2_status {
-                    Ok(s) if s.success() => debug!("Added ip fakeip route {} to table {}", fakeip_str, table_2),
-                    Ok(s) => return Err(format!("Failed to add ip route to table {} (exit code: {})", table_2, s)),
+                    Ok(s) if s.success() => {
+                        debug!("Added ip fakeip route {} to table {}", fakeip_str, table_2)
+                    }
+                    Ok(s) => {
+                        return Err(format!(
+                            "Failed to add ip route to table {} (exit code: {})",
+                            table_2, s
+                        ));
+                    }
                     Err(e) => return Err(format!("Failed to execute 'ip route' command: {}", e)),
                 }
             }
@@ -322,16 +444,32 @@ impl NetworkManager {
         let table_2 = (self.table_id + 1).to_string();
 
         // IPv4 cleanup
-        let _ = Command::new("ip").args(["rule", "del", "pref", "3"]).output();
-        let _ = Command::new("ip").args(["rule", "del", "pref", "4"]).output();
-        let _ = Command::new("ip").args(["route", "flush", "table", &table_1]).output();
-        let _ = Command::new("ip").args(["route", "flush", "table", &table_2]).output();
+        let _ = Command::new("ip")
+            .args(["rule", "del", "pref", "3"])
+            .output();
+        let _ = Command::new("ip")
+            .args(["rule", "del", "pref", "4"])
+            .output();
+        let _ = Command::new("ip")
+            .args(["route", "flush", "table", &table_1])
+            .output();
+        let _ = Command::new("ip")
+            .args(["route", "flush", "table", &table_2])
+            .output();
 
         // IPv6 cleanup
-        let _ = Command::new("ip").args(["-6", "rule", "del", "pref", "3"]).output();
-        let _ = Command::new("ip").args(["-6", "rule", "del", "pref", "4"]).output();
-        let _ = Command::new("ip").args(["-6", "route", "flush", "table", &table_1]).output();
-        let _ = Command::new("ip").args(["-6", "route", "flush", "table", &table_2]).output();
+        let _ = Command::new("ip")
+            .args(["-6", "rule", "del", "pref", "3"])
+            .output();
+        let _ = Command::new("ip")
+            .args(["-6", "rule", "del", "pref", "4"])
+            .output();
+        let _ = Command::new("ip")
+            .args(["-6", "route", "flush", "table", &table_1])
+            .output();
+        let _ = Command::new("ip")
+            .args(["-6", "route", "flush", "table", &table_2])
+            .output();
     }
 }
 
@@ -362,7 +500,7 @@ mod tests {
 
         let script = nm.generate_nft_script();
         assert!(script.contains("meta mark and 0x10000 == 0x10000 accept"));
-        assert!(script.contains("iifname { \"eth0\" } ip daddr { 198.18.0.0/15, 0.0.0.0/0 } meta l4proto { tcp, udp } tproxy ip to :7080"));
+        assert!(script.contains("iifname { \"eth0\" } fib daddr type != local ip daddr { 198.18.0.0/15, 0.0.0.0/0 } meta l4proto { tcp, udp } tproxy ip to :7080"));
         assert!(script.contains("ip daddr { 198.18.0.0/15, 0.0.0.0/0 } meta mark set"));
     }
 
@@ -382,7 +520,13 @@ mod tests {
         );
 
         let script = nm.generate_nft_script();
-        assert!(script.contains("iifname { \"eth0\", \"eth1\" } ip daddr { 198.18.0.0/15 }"));
-        assert!(script.contains("iifname { \"eth0\", \"eth1\" } ip6 daddr { ::/0 }"));
+        assert!(script.contains(
+            "iifname { \"eth0\", \"eth1\" } fib daddr type != local ip daddr { 198.18.0.0/15 }"
+        ));
+        assert!(
+            script.contains(
+                "iifname { \"eth0\", \"eth1\" } fib daddr type != local ip6 daddr { ::/0 }"
+            )
+        );
     }
 }
