@@ -18,11 +18,12 @@ fitproxy \
 ## Flags
 
 * `--rule <pattern>=<target>` : `<pattern>` can be a domain name or an IPv4/IPv6 CIDR (e.g. `0.0.0.0/0`, `::/0`, `192.168.0.0/16`, `10.0.0.1`). `<target>` could be:
-  * `<ip>:<port>` (implicit HTTP proxy)
-  * `http://<ip>:<port>` (HTTP proxy)
-  * `socks5://<ip>:<port>` (SOCKS5 proxy, remote DNS resolution)
+  * `<ip>:<port>` (implicit HTTP proxy, TCP only)
+  * `http://<ip>:<port>` (HTTP proxy, TCP only)
+  * `socks5://<ip>:<port>` (SOCKS5 proxy; TCP + UDP ASSOCIATE supported)
+  * `socks5://<ip>:<port>?udp=0` (SOCKS5 proxy without UDP support; UDP traffic will be rejected directly)
   * `socks5h://<ip>:<port>` (alias of `socks5`)
-  * `direct` (direct connect)
+  * `direct` (direct connect, TCP + UDP supported)
   * `reject` (drop / terminate connection)
   
   Multiple rules can be provided. Rules are evaluated in order; the first match is used.
@@ -30,7 +31,8 @@ fitproxy \
     * `*` : wildcard subdomains only. E.g. `*.example.com` matches `a.example.com` but NOT `example.com` itself.
     * `-` : main domain only. E.g. `-.example.com` matches `example.com` only, NOT `a.example.com`.
   * For IP CIDRs: e.g. `0.0.0.0/0=direct`, `::/0=socks5://127.0.0.1:1080`, or `192.168.0.0/16=reject`. When the TPROXY listen port receives a request whose destination IP is not a fake IP, it matches against IP rules (with longest-prefix match precedence). If accepted by an IP rule (and not matched by an IP reject rule), it forwards the original request directly or via proxy.
-  * Allowed IP CIDRs are automatically included in `nftables` TPROXY `ip daddr` / `ip6 daddr` sets.
+  * For UDP TPROXY: supports `direct` and `socks5` proxy targets (via SOCKS5 UDP ASSOCIATE). If a SOCKS5 target specifies `?udp=0` (or `?udp=false`), UDP requests matching that rule are rejected directly. HTTP proxy targets do not support UDP and will reject UDP requests.
+  * Allowed IP CIDRs are automatically included in `nftables` TPROXY `ip daddr` / `ip6 daddr` sets matching both `{ tcp, udp }`.
   * An implicit fallback reject rule is always used at the end. At least 1 rule must be provided.
 
 * `--interface <interfaces>` : (Optional) Comma-separated list of network interfaces (e.g. `eth0` or `eth0,eth1`). If provided, the nftables prerouting TPROXY rule will only match traffic received on those interface(s) using `iifname { "eth0" }`.

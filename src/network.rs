@@ -93,7 +93,7 @@ impl NetworkManager {
                 .collect::<Vec<_>>()
                 .join(", ");
             prerouting_rules.push(format!(
-                "        {}ip daddr {{ {} }} meta l4proto tcp tproxy ip to :{} meta mark set {} accept\n",
+                "        {}ip daddr {{ {} }} meta l4proto {{ tcp, udp }} tproxy ip to :{} meta mark set {} accept\n",
                 iif_clause, v4_set, self.listen_port, nft_set_mark_expr
             ));
         }
@@ -105,7 +105,7 @@ impl NetworkManager {
                 .collect::<Vec<_>>()
                 .join(", ");
             prerouting_rules.push(format!(
-                "        {}ip6 daddr {{ {} }} meta l4proto tcp tproxy ip6 to :{} meta mark set {} accept\n",
+                "        {}ip6 daddr {{ {} }} meta l4proto {{ tcp, udp }} tproxy ip6 to :{} meta mark set {} accept\n",
                 iif_clause, v6_set, self.listen_port, nft_set_mark_expr
             ));
         }
@@ -362,7 +362,7 @@ mod tests {
 
         let script = nm.generate_nft_script();
         assert!(script.contains("meta mark and 0x10000 == 0x10000 accept"));
-        assert!(script.contains("iifname { \"eth0\" } ip daddr { 198.18.0.0/15, 0.0.0.0/0 } meta l4proto tcp tproxy ip to :7080"));
+        assert!(script.contains("iifname { \"eth0\" } ip daddr { 198.18.0.0/15, 0.0.0.0/0 } meta l4proto { tcp, udp } tproxy ip to :7080"));
         assert!(script.contains("ip daddr { 198.18.0.0/15, 0.0.0.0/0 } meta mark set"));
     }
 

@@ -5,7 +5,7 @@ use std::net::IpAddr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Http(String),
-    Socks5(String),
+    Socks5 { addr: String, udp: bool },
     Direct,
     Reject,
 }
@@ -14,11 +14,39 @@ impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Target::Http(addr) => write!(f, "http://{}", addr),
-            Target::Socks5(addr) => write!(f, "socks5://{}", addr),
+            Target::Socks5 { addr, udp } => {
+                if *udp {
+                    write!(f, "socks5://{}", addr)
+                } else {
+                    write!(f, "socks5://{}?udp=0", addr)
+                }
+            }
             Target::Direct => write!(f, "direct"),
             Target::Reject => write!(f, "reject"),
         }
     }
+}
+
+pub fn parse_socks5_target_part(rest: &str) -> (String, bool) {
+    let mut udp = true;
+    let addr = if let Some((addr_part, query_part)) = rest.split_once('?') {
+        for query_item in query_part.split('&') {
+            if let Some((k, v)) = query_item.split_once('=') {
+                if k.trim().eq_ignore_ascii_case("udp") {
+                    let v = v.trim().to_ascii_lowercase();
+                    if v == "0" || v == "false" || v == "no" || v == "off" {
+                        udp = false;
+                    } else if v == "1" || v == "true" || v == "yes" || v == "on" {
+                        udp = true;
+                    }
+                }
+            }
+        }
+        addr_part.trim().to_string()
+    } else {
+        rest.trim().to_string()
+    };
+    (addr, udp)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,10 +155,12 @@ impl Rule {
             Target::Direct
         } else if target_part.eq_ignore_ascii_case("reject") {
             Target::Reject
-        } else if let Some(addr) = target_part.strip_prefix("socks5://") {
-            Target::Socks5(addr.to_string())
-        } else if let Some(addr) = target_part.strip_prefix("socks5h://") {
-            Target::Socks5(addr.to_string())
+        } else if let Some(rest) = target_part
+            .strip_prefix("socks5://")
+            .or_else(|| target_part.strip_prefix("socks5h://"))
+        {
+            let (addr, udp) = parse_socks5_target_part(rest);
+            Target::Socks5 { addr, udp }
         } else if let Some(addr) = target_part.strip_prefix("http://") {
             Target::Http(addr.to_string())
         } else {
@@ -261,10 +291,31 @@ mod tests {
         assert_eq!(r1.target, Target::Http("127.0.0.1:1080".to_string()));
 
         let r2 = Rule::parse("ipinfo.io=socks5://127.0.0.1:1080").unwrap();
-        assert_eq!(r2.target, Target::Socks5("127.0.0.1:1080".to_string()));
+        assert_eq!(
+            r2.target,
+            Target::Socks5 {
+                addr: "127.0.0.1:1080".to_string(),
+                udp: true,
+            }
+        );
 
         let r3 = Rule::parse("google.com=socks5h://127.0.0.1:1080").unwrap();
-        assert_eq!(r3.target, Target::Socks5("127.0.0.1:1080".to_string()));
+        assert_eq!(
+            r3.target,
+            Target::Socks5 {
+                addr: "127.0.0.1:1080".to_string(),
+                udp: true,
+            }
+        );
+
+        let r3_no_udp = Rule::parse("google.com=socks5://127.0.0.1:1080?udp=0").unwrap();
+        assert_eq!(
+            r3_no_udp.target,
+            Target::Socks5 {
+                addr: "127.0.0.1:1080".to_string(),
+                udp: false,
+            }
+        );
 
         let r4 = Rule::parse("local.net=direct").unwrap();
         assert_eq!(r4.target, Target::Direct);
@@ -319,7 +370,13 @@ mod tests {
         );
 
         let r4 = Rule::parse("::/0=socks5://127.0.0.1:1080").unwrap();
-        assert_eq!(r4.target, Target::Socks5("127.0.0.1:1080".to_string()));
+        assert_eq!(
+            r4.target,
+            Target::Socks5 {
+                addr: "127.0.0.1:1080".to_string(),
+                udp: true,
+            }
+        );
         assert_eq!(
             r4.pattern,
             RulePattern::Ip("::/0".parse::<IpNet>().unwrap())
@@ -366,7 +423,10 @@ mod tests {
         let ip_v6_public: IpAddr = "2606:4700::6810".parse().unwrap();
         assert_eq!(
             set.match_ip(&ip_v6_public),
-            &Target::Socks5("127.0.0.1:1080".to_string())
+            &Target::Socks5 {
+                addr: "127.0.0.1:1080".to_string(),
+                udp: true,
+            }
         );
     }
 

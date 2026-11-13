@@ -376,3 +376,112 @@ async fn test_tproxy_server_direct_ip_forwarding() {
     client_connect_task.await.unwrap();
     direct_task.await.unwrap();
 }
+
+#[tokio::test]
+async fn test_socks5_udp_parameter_and_rules() {
+    let r1 = Rule::parse("domain.com=socks5://127.0.0.1:1080?udp=0").unwrap();
+    assert_eq!(
+        r1.target,
+        fitproxy::rules::Target::Socks5 {
+            addr: "127.0.0.1:1080".to_string(),
+            udp: false,
+        }
+    );
+
+    let r2 = Rule::parse("domain.com=socks5://127.0.0.1:1080?udp=false").unwrap();
+    assert_eq!(
+        r2.target,
+        fitproxy::rules::Target::Socks5 {
+            addr: "127.0.0.1:1080".to_string(),
+            udp: false,
+        }
+    );
+
+    let r3 = Rule::parse("domain.com=socks5://127.0.0.1:1080?udp=1").unwrap();
+    assert_eq!(
+        r3.target,
+        fitproxy::rules::Target::Socks5 {
+            addr: "127.0.0.1:1080".to_string(),
+            udp: true,
+        }
+    );
+
+    let r4 = Rule::parse("domain.com=socks5://127.0.0.1:1080").unwrap();
+    assert_eq!(
+        r4.target,
+        fitproxy::rules::Target::Socks5 {
+            addr: "127.0.0.1:1080".to_string(),
+            udp: true,
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_socks5_udp_associate_protocol() {
+    use fitproxy::outbound::{decode_socks5_udp_packet, encode_socks5_udp_packet, socks5_udp_associate};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, UdpSocket};
+
+    // 1. Start a mock UDP relay endpoint
+    let relay_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let relay_addr = relay_socket.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        let mut buf = [0u8; 1024];
+        if let Ok((n, src)) = relay_socket.recv_from(&mut buf).await {
+            // Echo back with SOCKS5 UDP header
+            let (payload, _target) = decode_socks5_udp_packet(&buf[..n]).unwrap();
+            let reply_packet = encode_socks5_udp_packet("127.0.0.1", 53, payload).unwrap();
+            let _ = relay_socket.send_to(&reply_packet, src).await;
+        }
+    });
+
+    // 2. Start a mock SOCKS5 server handling TCP handshake and UDP ASSOCIATE
+    let socks5_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socks5_addr = socks5_listener.local_addr().unwrap();
+
+    let relay_port = relay_addr.port();
+    tokio::spawn(async move {
+        if let Ok((mut stream, _)) = socks5_listener.accept().await {
+            // Read greeting: [0x05, 0x01, 0x00]
+            let mut greet = [0u8; 3];
+            stream.read_exact(&mut greet).await.unwrap();
+            assert_eq!(greet[0], 0x05);
+            // Send choice: [0x05, 0x00]
+            stream.write_all(&[0x05, 0x00]).await.unwrap();
+
+            // Read UDP ASSOCIATE request: [0x05, 0x03, 0x00, 0x01, ...]
+            let mut req = [0u8; 10];
+            stream.read_exact(&mut req).await.unwrap();
+            assert_eq!(req[0], 0x05);
+            assert_eq!(req[1], 0x03); // CMD: UDP ASSOCIATE
+
+            // Send reply: VER=5, REP=0, RSV=0, ATYP=1, IP=127.0.0.1, PORT=relay_port
+            let mut rep = vec![0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1];
+            rep.extend_from_slice(&relay_port.to_be_bytes());
+            stream.write_all(&rep).await.unwrap();
+
+            // Keep TCP connection open while testing
+            let mut dummy = [0u8; 1];
+            let _ = stream.read(&mut dummy).await;
+        }
+    });
+
+    // 3. Test socks5_udp_associate client
+    let assoc = socks5_udp_associate(&socks5_addr.to_string(), None).await.expect("socks5 udp associate");
+    assert_eq!(assoc.relay_addr, relay_addr);
+
+    // 4. Send UDP packet to relay endpoint
+    let client_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    client_udp.connect(assoc.relay_addr).await.unwrap();
+
+    let payload = b"socks5-udp-test";
+    let encoded = encode_socks5_udp_packet("8.8.8.8", 53, payload).unwrap();
+    client_udp.send(&encoded).await.unwrap();
+
+    let mut resp_buf = [0u8; 512];
+    let n = client_udp.recv(&mut resp_buf).await.unwrap();
+    let (decoded_payload, target) = decode_socks5_udp_packet(&resp_buf[..n]).unwrap();
+    assert_eq!(decoded_payload, payload);
+    assert_eq!(target, "127.0.0.1:53".parse().unwrap());
+}

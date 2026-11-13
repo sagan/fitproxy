@@ -10,7 +10,10 @@ pub mod socks5;
 
 pub use direct::handle_direct;
 pub use http::handle_http_proxy;
-pub use socks5::handle_socks5_proxy;
+pub use socks5::{
+    decode_socks5_udp_packet, encode_socks5_udp_packet, handle_socks5_proxy,
+    socks5_udp_associate, Socks5UdpAssociation,
+};
 
 pub fn format_authority(host: &str, port: u16) -> String {
     if host.contains(':') && !host.starts_with('[') {
