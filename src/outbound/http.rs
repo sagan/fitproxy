@@ -3,21 +3,25 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 use tokio::net::TcpStream;
 use tracing::debug;
 
+use crate::outbound::{connect_tcp, format_authority};
+
 pub async fn handle_http_proxy(
     mut client_stream: TcpStream,
     proxy_addr: &str,
-    domain: &str,
+    target_host: &str,
     port: u16,
+    egress_mark: Option<u32>,
 ) -> io::Result<()> {
     debug!(
         "Connecting to HTTP proxy {} for {}:{}",
-        proxy_addr, domain, port
+        proxy_addr, target_host, port
     );
-    let mut proxy_stream = TcpStream::connect(proxy_addr).await?;
+    let mut proxy_stream = connect_tcp(proxy_addr, egress_mark).await?;
 
+    let authority = format_authority(target_host, port);
     let connect_req = format!(
-        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\nProxy-Connection: Keep-Alive\r\n\r\n",
-        domain, port, domain, port
+        "CONNECT {} HTTP/1.1\r\nHost: {}\r\nProxy-Connection: Keep-Alive\r\n\r\n",
+        authority, authority
     );
     proxy_stream.write_all(connect_req.as_bytes()).await?;
 
@@ -49,7 +53,7 @@ pub async fn handle_http_proxy(
         ));
     }
 
-    debug!("HTTP proxy handshake established for {}:{}", domain, port);
+    debug!("HTTP proxy handshake established for {}:{}", target_host, port);
     let _ = copy_bidirectional(&mut client_stream, &mut proxy_stream).await?;
     Ok(())
 }

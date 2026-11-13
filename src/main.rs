@@ -32,6 +32,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     info!("Loaded {} proxy rules", config.rules.rules().len());
+    let allowed_cidrs = config.rules.allowed_ip_cidrs();
+    if !allowed_cidrs.is_empty() {
+        info!("Allowed IP CIDRs for general TPROXY: {:?}", allowed_cidrs);
+    }
+    if !config.interfaces.is_empty() {
+        info!("Matching TPROXY interfaces: {:?}", config.interfaces);
+    }
     info!("Fake IP CIDR range: {}", config.fakeip_range);
     info!(
         "Static fake IP assignments: {}",
@@ -40,6 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("TPROXY listen address: {}", config.listen_addr);
     info!("DNS server listen address: {}", config.listen_dns_addr);
     info!("Disk cache path: {:?}", config.cache_path);
+    info!("Egress mark: {}", config.egress_mark.to_ip_rule_str());
 
     // Initialize disk cache
     let disk_cache = Arc::new(DiskCache::new(config.cache_path.clone()));
@@ -77,9 +85,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut network_manager = if config.setup_network {
         let mut nm = NetworkManager::new(
             config.fakeip_range,
+            allowed_cidrs,
             config.listen_addr.port(),
             config.table_id,
             config.fwmark.clone(),
+            config.egress_mark.clone(),
+            config.interfaces.clone(),
         );
         if let Err(e) = nm.setup() {
             warn!(
@@ -106,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.listen_addr,
         fakeip_manager.clone(),
         config.rules.clone(),
+        Some(config.egress_mark.mark),
     ));
 
     // Periodic cache compaction task (every 30 minutes)

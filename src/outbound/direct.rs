@@ -3,15 +3,17 @@ use tokio::io::copy_bidirectional;
 use tokio::net::TcpStream;
 use tracing::debug;
 
+use crate::outbound::connect_host;
+
 pub async fn handle_direct(
     mut client_stream: TcpStream,
-    domain: &str,
+    target_host: &str,
     port: u16,
+    egress_mark: Option<u32>,
 ) -> io::Result<()> {
-    let target_addr = format!("{}:{}", domain, port);
-    debug!("Connecting directly to {}", target_addr);
+    debug!("Connecting directly to {}:{}", target_host, port);
 
-    let mut target_stream = TcpStream::connect(&target_addr).await?;
+    let mut target_stream = connect_host(target_host, port, egress_mark).await?;
     let _ = copy_bidirectional(&mut client_stream, &mut target_stream).await?;
     Ok(())
 }

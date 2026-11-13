@@ -73,8 +73,8 @@ impl FwMark {
     about = "Linux Fake IP + TPROXY DNS server and proxy"
 )]
 pub struct CliArgs {
-    /// Proxy rule in the format <domain>=<target>. Can be specified multiple times.
-    #[arg(long = "rule", value_name = "DOMAIN=TARGET")]
+    /// Proxy rule in the format <pattern>=<target>. Can be domain or IP CIDR. Can be specified multiple times.
+    #[arg(long = "rule", value_name = "PATTERN=TARGET")]
     pub rules: Vec<String>,
 
     /// The fake IP CIDR range (IPv4 or IPv6).
@@ -125,6 +125,14 @@ pub struct CliArgs {
     /// Firewall mark for policy routing ("mark" or "mark/bitmask").
     #[arg(long = "fwmark", default_value = "0x8000/0x8000")]
     pub fwmark: String,
+
+    /// Comma-separated list of network interfaces to match in TPROXY prerouting.
+    #[arg(long = "interface", value_name = "INTERFACES")]
+    pub interface: Option<String>,
+
+    /// Firewall mark for fitproxy egress sockets ("mark" or "mark/bitmask").
+    #[arg(long = "egress-mark", default_value = "0x10000/0x10000")]
+    pub egress_mark: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -138,6 +146,8 @@ pub struct JsonConfigFile {
     pub setup_network: Option<bool>,
     pub table_id: Option<u32>,
     pub fwmark: Option<serde_json::Value>,
+    pub interface: Option<serde_json::Value>,
+    pub egress_mark: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +162,8 @@ pub struct AppConfig {
     pub setup_network: bool,
     pub table_id: u32,
     pub fwmark: FwMark,
+    pub interfaces: Vec<String>,
+    pub egress_mark: FwMark,
 }
 
 pub fn parse_socket_addr(s: &str, default_port: u16, prefer_ipv6: bool) -> Result<SocketAddr, String> {
@@ -333,6 +345,52 @@ impl AppConfig {
         };
         let fwmark = FwMark::parse(&fwmark_str)?;
 
+        // Interfaces
+        let mut interfaces = Vec::new();
+        if let Some(iface_str) = cli.interface {
+            for item in iface_str.split(',') {
+                let trimmed = item.trim();
+                if !trimmed.is_empty() {
+                    interfaces.push(trimmed.to_string());
+                }
+            }
+        } else if let Some(val) = file_config.interface {
+            match val {
+                serde_json::Value::String(s) => {
+                    for item in s.split(',') {
+                        let trimmed = item.trim();
+                        if !trimmed.is_empty() {
+                            interfaces.push(trimmed.to_string());
+                        }
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                interfaces.push(trimmed.to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Egress mark
+        let egress_mark_str =
+            if cli.egress_mark != "0x10000/0x10000" || file_config.egress_mark.is_none() {
+                cli.egress_mark
+            } else {
+                match file_config.egress_mark.unwrap() {
+                    serde_json::Value::String(s) => s,
+                    serde_json::Value::Number(n) => n.to_string(),
+                    v => v.to_string(),
+                }
+            };
+        let egress_mark = FwMark::parse(&egress_mark_str)?;
+
         Ok(AppConfig {
             rules: rule_set,
             fakeip_range,
@@ -344,6 +402,8 @@ impl AppConfig {
             setup_network,
             table_id,
             fwmark,
+            interfaces,
+            egress_mark,
         })
     }
 }

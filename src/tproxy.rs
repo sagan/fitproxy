@@ -14,14 +14,21 @@ pub struct TproxyServer {
     listen_addr: SocketAddr,
     fakeip_manager: FakeIpManager,
     rules: RuleSet,
+    egress_mark: Option<u32>,
 }
 
 impl TproxyServer {
-    pub fn new(listen_addr: SocketAddr, fakeip_manager: FakeIpManager, rules: RuleSet) -> Self {
+    pub fn new(
+        listen_addr: SocketAddr,
+        fakeip_manager: FakeIpManager,
+        rules: RuleSet,
+        egress_mark: Option<u32>,
+    ) -> Self {
         TproxyServer {
             listen_addr,
             fakeip_manager,
             rules,
+            egress_mark,
         }
     }
 
@@ -115,72 +122,89 @@ impl TproxyServer {
         };
 
         let dst_ip = orig_dst.ip();
+        let dst_port = orig_dst.port();
+        let is_fake = self.fakeip_manager.is_fake_ip(&dst_ip);
 
-        // Original request dst ip MUST be in fake ip range
-        if !self.fakeip_manager.is_fake_ip(&dst_ip) {
-            debug!(
-                "Dst IP {} not in fake IP range (from {}): dropping connection",
-                dst_ip, peer_addr
-            );
-            return;
-        }
-
-        // If request ip is not a recognized fake ip (known origin domain), drop connection
-        let domain = match self.fakeip_manager.get_domain(&dst_ip) {
-            Some(d) => d,
-            None => {
+        let (target, target_host) = if is_fake {
+            let domain = match self.fakeip_manager.get_domain(&dst_ip) {
+                Some(d) => d,
+                None => {
+                    debug!(
+                        "Unrecognized fake IP {} (from {}): dropping connection",
+                        dst_ip, peer_addr
+                    );
+                    return;
+                }
+            };
+            let target = self.rules.match_domain(&domain).clone();
+            (target, domain)
+        } else {
+            // Non-fake IP: check IP rules
+            let target = self.rules.match_ip(&dst_ip).clone();
+            if matches!(target, Target::Reject) {
                 debug!(
-                    "Unrecognized fake IP {} (from {}): dropping connection",
+                    "Dst IP {} not accepted by any IP rule (or matched reject rule) from {}: dropping connection",
                     dst_ip, peer_addr
                 );
                 return;
             }
+            (target, dst_ip.to_string())
         };
 
-        let dst_port = orig_dst.port();
-        let target = self.rules.match_domain(&domain);
         debug!(
             "TPROXY connection from {} -> {} ({}:{}): target={}",
-            peer_addr, dst_ip, domain, dst_port, target
+            peer_addr, dst_ip, target_host, dst_port, target
         );
 
         match target {
             Target::Reject => {
                 debug!(
                     "Rejecting connection to {} ({}:{})",
-                    domain, dst_ip, dst_port
+                    target_host, dst_ip, dst_port
                 );
                 // Drop stream immediately (will send RST / FIN)
             }
             Target::Direct => {
-                self.fakeip_manager.inc_conn(&dst_ip);
-                if let Err(e) = handle_direct(stream, &domain, dst_port).await {
+                if is_fake {
+                    self.fakeip_manager.inc_conn(&dst_ip);
+                }
+                if let Err(e) = handle_direct(stream, &target_host, dst_port, self.egress_mark).await {
                     debug!(
                         "Direct outbound error for {}:{}: {}",
-                        domain, dst_port, e
+                        target_host, dst_port, e
                     );
                 }
-                self.fakeip_manager.dec_conn(&dst_ip);
+                if is_fake {
+                    self.fakeip_manager.dec_conn(&dst_ip);
+                }
             }
             Target::Http(proxy) => {
-                self.fakeip_manager.inc_conn(&dst_ip);
-                if let Err(e) = handle_http_proxy(stream, proxy, &domain, dst_port).await {
+                if is_fake {
+                    self.fakeip_manager.inc_conn(&dst_ip);
+                }
+                if let Err(e) = handle_http_proxy(stream, &proxy, &target_host, dst_port, self.egress_mark).await {
                     debug!(
                         "HTTP proxy outbound error for {}:{}: {}",
-                        domain, dst_port, e
+                        target_host, dst_port, e
                     );
                 }
-                self.fakeip_manager.dec_conn(&dst_ip);
+                if is_fake {
+                    self.fakeip_manager.dec_conn(&dst_ip);
+                }
             }
             Target::Socks5(proxy) => {
-                self.fakeip_manager.inc_conn(&dst_ip);
-                if let Err(e) = handle_socks5_proxy(stream, proxy, &domain, dst_port).await {
+                if is_fake {
+                    self.fakeip_manager.inc_conn(&dst_ip);
+                }
+                if let Err(e) = handle_socks5_proxy(stream, &proxy, &target_host, dst_port, self.egress_mark).await {
                     debug!(
                         "SOCKS5 proxy outbound error for {}:{}: {}",
-                        domain, dst_port, e
+                        target_host, dst_port, e
                     );
                 }
-                self.fakeip_manager.dec_conn(&dst_ip);
+                if is_fake {
+                    self.fakeip_manager.dec_conn(&dst_ip);
+                }
             }
         }
     }

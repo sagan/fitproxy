@@ -17,7 +17,7 @@ fitproxy \
 
 ## Flags
 
-* `--rule <domain>=<target>` : `<target>` could be:
+* `--rule <pattern>=<target>` : `<pattern>` can be a domain name or an IPv4/IPv6 CIDR (e.g. `0.0.0.0/0`, `::/0`, `192.168.0.0/16`, `10.0.0.1`). `<target>` could be:
   * `<ip>:<port>` (implicit HTTP proxy)
   * `http://<ip>:<port>` (HTTP proxy)
   * `socks5://<ip>:<port>` (SOCKS5 proxy, remote DNS resolution)
@@ -26,12 +26,15 @@ fitproxy \
   * `reject` (drop / terminate connection)
   
   Multiple rules can be provided. Rules are evaluated in order; the first match is used.
-  By default, `<domain>` matches subdomains as well (e.g. `example.com` matches `example.com`, `a.example.com`, and `a.b.example.com`).
-  Prefixes supported:
-  * `*` : wildcard subdomains only. E.g. `*.example.com` matches `a.example.com` and `b.a.example.com` but NOT `example.com` itself.
-  * `-` : main domain only. E.g. `-.example.com` matches `example.com` only, NOT `a.example.com`.
-  * An implicit `*=reject` fallback rule is always used at the end. At least 1 rule must be provided.
+  * For domains: by default, `<domain>` matches subdomains as well (e.g. `example.com` matches `example.com`, `a.example.com`, and `a.b.example.com`).
+    * `*` : wildcard subdomains only. E.g. `*.example.com` matches `a.example.com` but NOT `example.com` itself.
+    * `-` : main domain only. E.g. `-.example.com` matches `example.com` only, NOT `a.example.com`.
+  * For IP CIDRs: e.g. `0.0.0.0/0=direct`, `::/0=socks5://127.0.0.1:1080`, or `192.168.0.0/16=reject`. When the TPROXY listen port receives a request whose destination IP is not a fake IP, it matches against IP rules (with longest-prefix match precedence). If accepted by an IP rule (and not matched by an IP reject rule), it forwards the original request directly or via proxy.
+  * Allowed IP CIDRs are automatically included in `nftables` TPROXY `ip daddr` / `ip6 daddr` sets.
+  * An implicit fallback reject rule is always used at the end. At least 1 rule must be provided.
 
+* `--interface <interfaces>` : (Optional) Comma-separated list of network interfaces (e.g. `eth0` or `eth0,eth1`). If provided, the nftables prerouting TPROXY rule will only match traffic received on those interface(s) using `iifname { "eth0" }`.
+* `--egress-mark <mark>` : (Optional) Firewall mark bitmask set on fitproxy egress sockets to prevent routing loops (e.g. `0x10000/0x10000`). Packets with this mark are excluded in nftables TPROXY rules. Defaults to `0x10000/0x10000`.
 * `--fakeip-range <cidr>` : (Optional) The fake IP CIDR range (supports IPv4 e.g. `198.18.0.0/15` or IPv6 e.g. `fc00::/18`). Defaults to `198.18.0.0/15`.
 * `--fakeip <domain>=<ip>` : (Optional) Pre-assign fixed/static fake IP to domains (exact domain only, IPv4 or IPv6). Example: `--fakeip google.com=198.18.0.2`. Static fake IPs take precedence over dynamic allocations.
 * `--listen [<ip>:]<port>` : (Optional) TPROXY listen address. Defaults to `7080`.
@@ -49,8 +52,11 @@ fitproxy \
   "rules": [
     "example.com=127.0.0.1:1080",
     "ipinfo.io=socks5://127.0.0.1:1080",
-    "local.lan=direct"
+    "0.0.0.0/0=direct",
+    "192.168.0.0/16=reject"
   ],
+  "interface": ["eth0"],
+  "egress_mark": "0x10000/0x10000",
   "fakeip_range": "198.18.0.0/15",
   "fakeip": {
     "google.com": "198.18.0.2"

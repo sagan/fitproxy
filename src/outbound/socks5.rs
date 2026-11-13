@@ -1,19 +1,23 @@
 use std::io;
+use std::net::IpAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 use tokio::net::TcpStream;
 use tracing::debug;
 
+use crate::outbound::connect_tcp;
+
 pub async fn handle_socks5_proxy(
     mut client_stream: TcpStream,
     proxy_addr: &str,
-    domain: &str,
+    target_host: &str,
     port: u16,
+    egress_mark: Option<u32>,
 ) -> io::Result<()> {
     debug!(
         "Connecting to SOCKS5 proxy {} for {}:{}",
-        proxy_addr, domain, port
+        proxy_addr, target_host, port
     );
-    let mut proxy_stream = TcpStream::connect(proxy_addr).await?;
+    let mut proxy_stream = connect_tcp(proxy_addr, egress_mark).await?;
 
     // 1. Client Greeting: VER=5, NMETHODS=1, METHOD=0 (No Auth)
     proxy_stream.write_all(&[0x05, 0x01, 0x00]).await?;
@@ -28,22 +32,35 @@ pub async fn handle_socks5_proxy(
         ));
     }
 
-    // 3. Connect request: VER=5, CMD=1 (CONNECT), RSV=0, ATYP=3 (DOMAINNAME)
-    let domain_bytes = domain.as_bytes();
-    if domain_bytes.len() > 255 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Domain name too long for SOCKS5 (max 255 bytes)",
-        ));
-    }
-
-    let mut request = Vec::with_capacity(7 + domain_bytes.len());
+    // 3. Connect request: VER=5, CMD=1 (CONNECT), RSV=0
+    let mut request = Vec::with_capacity(32);
     request.push(0x05); // VER
     request.push(0x01); // CMD: CONNECT
     request.push(0x00); // RSV
-    request.push(0x03); // ATYP: DOMAINNAME
-    request.push(domain_bytes.len() as u8);
-    request.extend_from_slice(domain_bytes);
+
+    if let Ok(ip) = target_host.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(v4) => {
+                request.push(0x01); // ATYP: IPv4
+                request.extend_from_slice(&v4.octets());
+            }
+            IpAddr::V6(v6) => {
+                request.push(0x04); // ATYP: IPv6
+                request.extend_from_slice(&v6.octets());
+            }
+        }
+    } else {
+        let domain_bytes = target_host.as_bytes();
+        if domain_bytes.len() > 255 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Domain name too long for SOCKS5 (max 255 bytes)",
+            ));
+        }
+        request.push(0x03); // ATYP: DOMAINNAME
+        request.push(domain_bytes.len() as u8);
+        request.extend_from_slice(domain_bytes);
+    }
     request.extend_from_slice(&port.to_be_bytes());
 
     proxy_stream.write_all(&request).await?;
@@ -88,7 +105,7 @@ pub async fn handle_socks5_proxy(
         }
     }
 
-    debug!("SOCKS5 proxy handshake established for {}:{}", domain, port);
+    debug!("SOCKS5 proxy handshake established for {}:{}", target_host, port);
     let _ = copy_bidirectional(&mut client_stream, &mut proxy_stream).await?;
     Ok(())
 }

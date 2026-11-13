@@ -1,4 +1,6 @@
+use ipnet::IpNet;
 use std::fmt;
+use std::net::IpAddr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -72,33 +74,55 @@ impl DomainPattern {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RulePattern {
+    Domain(DomainPattern),
+    Ip(IpNet),
+}
+
+impl RulePattern {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if s.contains('/') {
+            let net = s
+                .parse::<IpNet>()
+                .map_err(|e| format!("Invalid IP CIDR in rule pattern '{}': {}", s, e))?;
+            Ok(RulePattern::Ip(net))
+        } else if let Ok(ip) = s.parse::<IpAddr>() {
+            Ok(RulePattern::Ip(IpNet::from(ip)))
+        } else {
+            Ok(RulePattern::Domain(DomainPattern::parse(s)))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
-    pub pattern: DomainPattern,
+    pub pattern: RulePattern,
     pub target: Target,
     pub raw: String,
 }
 
 impl Rule {
     pub fn parse(s: &str) -> Result<Self, String> {
-        let (domain_part, target_part) = if let Some((d, t)) = s.split_once('=') {
+        let (pattern_part, target_part) = if let Some((d, t)) = s.split_once('=') {
             (d.trim(), t.trim())
         } else if let Some((d, t)) = s.split_once('@') {
             (d.trim(), t.trim())
         } else {
             return Err(format!(
-                "Invalid rule format (expected <domain>=<target>): '{}'",
+                "Invalid rule format (expected <pattern>=<target>): '{}'",
                 s
             ));
         };
 
-        if domain_part.is_empty() {
-            return Err(format!("Empty domain in rule: '{}'", s));
+        if pattern_part.is_empty() {
+            return Err(format!("Empty pattern in rule: '{}'", s));
         }
         if target_part.is_empty() {
             return Err(format!("Empty target in rule: '{}'", s));
         }
 
-        let pattern = DomainPattern::parse(domain_part);
+        let pattern = RulePattern::parse(pattern_part)?;
         let target = if target_part.eq_ignore_ascii_case("direct") {
             Target::Direct
         } else if target_part.eq_ignore_ascii_case("reject") {
@@ -130,7 +154,7 @@ pub struct RuleSet {
 
 impl RuleSet {
     pub fn new(rules: Vec<Rule>) -> Self {
-        // README: "A implicit *@reject rule is always used as the last (fallback) rule."
+        // README: "A implicit *=reject rule is always used as the last (fallback) rule."
         RuleSet {
             rules,
             fallback: Target::Reject,
@@ -139,15 +163,60 @@ impl RuleSet {
 
     pub fn match_domain(&self, domain: &str) -> &Target {
         for rule in &self.rules {
-            if rule.pattern.matches(domain) {
-                return &rule.target;
+            if let RulePattern::Domain(ref pat) = rule.pattern {
+                if pat.matches(domain) {
+                    return &rule.target;
+                }
             }
         }
         &self.fallback
     }
 
+    pub fn match_ip(&self, ip: &IpAddr) -> &Target {
+        let mut best_match: Option<(&Target, u8)> = None;
+
+        for rule in &self.rules {
+            if let RulePattern::Ip(ref net) = rule.pattern {
+                if net.contains(ip) {
+                    let prefix_len = net.prefix_len();
+                    match best_match {
+                        Some((_, best_len)) if prefix_len > best_len => {
+                            best_match = Some((&rule.target, prefix_len));
+                        }
+                        None => {
+                            best_match = Some((&rule.target, prefix_len));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if let Some((target, _)) = best_match {
+            target
+        } else {
+            &self.fallback
+        }
+    }
+
     pub fn is_allowed(&self, domain: &str) -> bool {
         !matches!(self.match_domain(domain), Target::Reject)
+    }
+
+    pub fn is_ip_allowed(&self, ip: &IpAddr) -> bool {
+        !matches!(self.match_ip(ip), Target::Reject)
+    }
+
+    pub fn allowed_ip_cidrs(&self) -> Vec<IpNet> {
+        let mut cidrs = Vec::new();
+        for rule in &self.rules {
+            if let RulePattern::Ip(ref net) = rule.pattern {
+                if !matches!(rule.target, Target::Reject) && !cidrs.contains(net) {
+                    cidrs.push(*net);
+                }
+            }
+        }
+        cidrs
     }
 
     pub fn rules(&self) -> &[Rule] {
@@ -224,5 +293,98 @@ mod tests {
         );
         assert_eq!(set.match_domain("bar.com"), &Target::Reject); // fallback
         assert_eq!(set.match_domain("unknown.org"), &Target::Reject); // fallback
+    }
+
+    #[test]
+    fn test_ip_rule_parsing() {
+        let r1 = Rule::parse("0.0.0.0/0=direct").unwrap();
+        assert_eq!(r1.target, Target::Direct);
+        assert_eq!(
+            r1.pattern,
+            RulePattern::Ip("0.0.0.0/0".parse::<IpNet>().unwrap())
+        );
+
+        let r2 = Rule::parse("192.168.1.0/24=reject").unwrap();
+        assert_eq!(r2.target, Target::Reject);
+        assert_eq!(
+            r2.pattern,
+            RulePattern::Ip("192.168.1.0/24".parse::<IpNet>().unwrap())
+        );
+
+        let r3 = Rule::parse("10.0.0.1=127.0.0.1:8080").unwrap();
+        assert_eq!(r3.target, Target::Http("127.0.0.1:8080".to_string()));
+        assert_eq!(
+            r3.pattern,
+            RulePattern::Ip("10.0.0.1/32".parse::<IpNet>().unwrap())
+        );
+
+        let r4 = Rule::parse("::/0=socks5://127.0.0.1:1080").unwrap();
+        assert_eq!(r4.target, Target::Socks5("127.0.0.1:1080".to_string()));
+        assert_eq!(
+            r4.pattern,
+            RulePattern::Ip("::/0".parse::<IpNet>().unwrap())
+        );
+
+        let r5 = Rule::parse("2001:db8::/32=direct").unwrap();
+        assert_eq!(r5.target, Target::Direct);
+        assert_eq!(
+            r5.pattern,
+            RulePattern::Ip("2001:db8::/32".parse::<IpNet>().unwrap())
+        );
+
+        // Invalid CIDR should error
+        assert!(Rule::parse("999.999.999.999/24=direct").is_err());
+        assert!(Rule::parse("1.2.3.4/40=direct").is_err());
+    }
+
+    #[test]
+    fn test_ip_ruleset_matching_and_lpm() {
+        // More specific prefix wins:
+        // 192.168.1.100/32 -> direct
+        // 192.168.0.0/16 -> reject
+        // 0.0.0.0/0 -> direct
+        let r1 = Rule::parse("0.0.0.0/0=direct").unwrap();
+        let r2 = Rule::parse("192.168.0.0/16=reject").unwrap();
+        let r3 = Rule::parse("192.168.1.100=direct").unwrap();
+        let r4 = Rule::parse("::/0=socks5://127.0.0.1:1080").unwrap();
+        let r5 = Rule::parse("fc00::/7=reject").unwrap();
+
+        let set = RuleSet::new(vec![r1, r2, r3, r4, r5]);
+
+        let ip_host: IpAddr = "192.168.1.100".parse().unwrap();
+        assert_eq!(set.match_ip(&ip_host), &Target::Direct);
+
+        let ip_subnet: IpAddr = "192.168.1.50".parse().unwrap();
+        assert_eq!(set.match_ip(&ip_subnet), &Target::Reject);
+
+        let ip_public: IpAddr = "8.8.8.8".parse().unwrap();
+        assert_eq!(set.match_ip(&ip_public), &Target::Direct);
+
+        let ip_v6_ula: IpAddr = "fd00::1".parse().unwrap();
+        assert_eq!(set.match_ip(&ip_v6_ula), &Target::Reject);
+
+        let ip_v6_public: IpAddr = "2606:4700::6810".parse().unwrap();
+        assert_eq!(
+            set.match_ip(&ip_v6_public),
+            &Target::Socks5("127.0.0.1:1080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_ip_ruleset_allowed_cidrs() {
+        let r1 = Rule::parse("0.0.0.0/0=direct").unwrap();
+        let r2 = Rule::parse("10.0.0.0/8=127.0.0.1:8080").unwrap();
+        let r3 = Rule::parse("192.168.0.0/16=reject").unwrap();
+        let r4 = Rule::parse("::/0=direct").unwrap();
+        let r5 = Rule::parse("domain.com=direct").unwrap();
+
+        let set = RuleSet::new(vec![r1, r2, r3, r4, r5]);
+        let cidrs = set.allowed_ip_cidrs();
+
+        assert_eq!(cidrs.len(), 3);
+        assert!(cidrs.contains(&"0.0.0.0/0".parse().unwrap()));
+        assert!(cidrs.contains(&"10.0.0.0/8".parse().unwrap()));
+        assert!(cidrs.contains(&"::/0".parse().unwrap()));
+        assert!(!cidrs.contains(&"192.168.0.0/16".parse().unwrap()));
     }
 }
