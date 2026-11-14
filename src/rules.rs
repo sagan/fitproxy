@@ -203,11 +203,12 @@ impl RuleSet {
     }
 
     pub fn match_ip(&self, ip: &IpAddr) -> &Target {
+        let ip = ip.to_canonical();
         let mut best_match: Option<(&Target, u8)> = None;
 
         for rule in &self.rules {
             if let RulePattern::Ip(ref net) = rule.pattern {
-                if net.contains(ip) {
+                if net.contains(&ip) {
                     let prefix_len = net.prefix_len();
                     match best_match {
                         Some((_, best_len)) if prefix_len > best_len => {
@@ -428,6 +429,13 @@ mod tests {
                 udp: true,
             }
         );
+
+        // IPv4-mapped IPv6 address should match IPv4 rule
+        let ip_mapped: IpAddr = "::ffff:192.168.1.100".parse().unwrap();
+        assert_eq!(set.match_ip(&ip_mapped), &Target::Direct);
+
+        let ip_mapped_reject: IpAddr = "::ffff:192.168.1.50".parse().unwrap();
+        assert_eq!(set.match_ip(&ip_mapped_reject), &Target::Reject);
     }
 
     #[test]

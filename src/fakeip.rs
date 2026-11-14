@@ -102,7 +102,7 @@ impl FakeIpManager {
     }
 
     pub fn is_fake_ip(&self, ip: &IpAddr) -> bool {
-        self.range.contains(ip)
+        self.range.contains(&ip.to_canonical())
     }
 
     /// Look up existing fake IP or allocate a new one dynamically.
@@ -218,24 +218,27 @@ impl FakeIpManager {
 
     /// Resolve a fake IP back to its original domain name.
     pub fn get_domain(&self, ip: &IpAddr) -> Option<String> {
+        let ip = ip.to_canonical();
         let inner = self.inner.read();
-        if let Some(d) = inner.static_ip_to_domain.get(ip) {
+        if let Some(d) = inner.static_ip_to_domain.get(&ip) {
             return Some(d.clone());
         }
-        if let Some(d) = inner.dynamic_ip_to_domain.get(ip) {
+        if let Some(d) = inner.dynamic_ip_to_domain.get(&ip) {
             return Some(d.clone());
         }
         None
     }
 
     pub fn inc_conn(&self, ip: &IpAddr) {
+        let ip = ip.to_canonical();
         let mut inner = self.inner.write();
-        *inner.active_conns.entry(*ip).or_insert(0) += 1;
+        *inner.active_conns.entry(ip).or_insert(0) += 1;
     }
 
     pub fn dec_conn(&self, ip: &IpAddr) {
+        let ip = ip.to_canonical();
         let mut inner = self.inner.write();
-        if let Some(count) = inner.active_conns.get_mut(ip) {
+        if let Some(count) = inner.active_conns.get_mut(&ip) {
             if *count > 0 {
                 *count -= 1;
             }

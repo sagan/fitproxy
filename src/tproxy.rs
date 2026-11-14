@@ -152,7 +152,7 @@ impl TproxyServer {
             }
         }
 
-        let dst_ip = orig_dst.ip();
+        let dst_ip = orig_dst.ip().to_canonical();
         let dst_port = orig_dst.port();
         let is_fake = self.fakeip_manager.is_fake_ip(&dst_ip);
 
@@ -442,7 +442,7 @@ async fn handle_tcp_connection(
         }
     };
 
-    let dst_ip = orig_dst.ip();
+    let dst_ip = orig_dst.ip().to_canonical();
     let dst_port = orig_dst.port();
     let is_fake = fakeip_manager.is_fake_ip(&dst_ip);
 
@@ -633,6 +633,9 @@ fn create_transparent_reply_socket(
     client_addr: SocketAddr,
     egress_mark: Option<u32>,
 ) -> io::Result<UdpSocket> {
+    let orig_dst = SocketAddr::new(orig_dst.ip().to_canonical(), orig_dst.port());
+    let client_addr = SocketAddr::new(client_addr.ip().to_canonical(), client_addr.port());
+
     let domain = if orig_dst.is_ipv6() {
         Domain::IPV6
     } else {
