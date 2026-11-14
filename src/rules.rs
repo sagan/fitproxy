@@ -250,6 +250,18 @@ impl RuleSet {
         cidrs
     }
 
+    pub fn proxied_ip_cidrs(&self) -> Vec<IpNet> {
+        let mut cidrs = Vec::new();
+        for rule in &self.rules {
+            if let RulePattern::Ip(ref net) = rule.pattern {
+                if !matches!(rule.target, Target::Reject | Target::Direct) && !cidrs.contains(net) {
+                    cidrs.push(*net);
+                }
+            }
+        }
+        cidrs
+    }
+
     pub fn rules(&self) -> &[Rule] {
         &self.rules
     }
@@ -454,5 +466,26 @@ mod tests {
         assert!(cidrs.contains(&"10.0.0.0/8".parse().unwrap()));
         assert!(cidrs.contains(&"::/0".parse().unwrap()));
         assert!(!cidrs.contains(&"192.168.0.0/16".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_ip_ruleset_proxied_cidrs() {
+        let r1 = Rule::parse("0.0.0.0/0=direct").unwrap();
+        let r2 = Rule::parse("10.0.0.0/8=127.0.0.1:8080").unwrap();
+        let r3 = Rule::parse("192.168.0.0/16=reject").unwrap();
+        let r4 = Rule::parse("::/0=socks5://127.0.0.1:1080").unwrap();
+        let r5 = Rule::parse("2001:db8::/32=direct").unwrap();
+
+        let set = RuleSet::new(vec![r1, r2, r3, r4, r5]);
+        let cidrs = set.proxied_ip_cidrs();
+
+        // Only 10.0.0.0/8 (HTTP proxy) and ::/0 (SOCKS5) should be in proxied cidrs.
+        // Direct and reject should be excluded.
+        assert_eq!(cidrs.len(), 2);
+        assert!(cidrs.contains(&"10.0.0.0/8".parse().unwrap()));
+        assert!(cidrs.contains(&"::/0".parse().unwrap()));
+        assert!(!cidrs.contains(&"0.0.0.0/0".parse().unwrap()));
+        assert!(!cidrs.contains(&"192.168.0.0/16".parse().unwrap()));
+        assert!(!cidrs.contains(&"2001:db8::/32".parse().unwrap()));
     }
 }

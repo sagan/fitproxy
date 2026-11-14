@@ -287,6 +287,7 @@ fn test_nft_rules_syntax_validation() {
 
     let nm = NetworkManager::new(
         fakeip,
+        allowed_cidrs.clone(),
         allowed_cidrs,
         7080,
         7080,
@@ -299,7 +300,7 @@ fn test_nft_rules_syntax_validation() {
 
     // Verify script contains iifname clause, daddr sets, protocols, and egress mark exclusion
     assert!(script.contains("meta mark and 0x10000 == 0x10000 accept"));
-    assert!(script.contains("iifname { \"eth0\", \"eth1\" }"));
+    assert!(script.contains("iifname { \"eth0\", \"eth1\", \"lo\" }"));
     assert!(script.contains("fib daddr type != local ip daddr { 198.18.0.0/15, 0.0.0.0/0 }"));
     assert!(script.contains("fib daddr type != local ip6 daddr { ::/0 }"));
     assert!(script.contains("meta l4proto { tcp, udp }"));
