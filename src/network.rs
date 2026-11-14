@@ -114,6 +114,7 @@ impl NetworkManager {
 
         let mut output_rules = Vec::new();
         output_rules.push(format!("        {}\n", nft_egress_exclude_expr));
+        output_rules.push("        ct direction reply accept\n".to_string());
 
         if need_v4 {
             let v4_set = v4_cidrs
@@ -500,6 +501,7 @@ mod tests {
 
         let script = nm.generate_nft_script();
         assert!(script.contains("meta mark and 0x10000 == 0x10000 accept"));
+        assert!(script.contains("ct direction reply accept"));
         assert!(script.contains("iifname { \"eth0\" } fib daddr type != local ip daddr { 198.18.0.0/15, 0.0.0.0/0 } meta l4proto { tcp, udp } tproxy ip to :7080"));
         assert!(script.contains("ip daddr { 198.18.0.0/15, 0.0.0.0/0 } meta mark set"));
     }
