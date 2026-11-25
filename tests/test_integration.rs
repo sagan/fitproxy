@@ -285,10 +285,13 @@ fn test_nft_rules_syntax_validation() {
     let egress_mark = FwMark::parse("0x10000/0x10000").unwrap();
     let allowed_cidrs = vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()];
 
+    let ignored_cidrs = vec!["192.168.0.0/16".parse().unwrap()];
+
     let nm = NetworkManager::new(
         fakeip,
         allowed_cidrs.clone(),
         allowed_cidrs,
+        ignored_cidrs,
         7080,
         7080,
         fwmark,
@@ -298,8 +301,9 @@ fn test_nft_rules_syntax_validation() {
 
     let script = nm.generate_nft_script();
 
-    // Verify script contains iifname clause, daddr sets, protocols, and egress mark exclusion
+    // Verify script contains iifname clause, daddr sets, protocols, ignore rules, and egress mark exclusion
     assert!(script.contains("meta mark and 0x10000 == 0x10000 accept"));
+    assert!(script.contains("ip daddr { 192.168.0.0/16 } accept"));
     assert!(script.contains("iifname { \"eth0\", \"eth1\", \"lo\" }"));
     assert!(script.contains("fib daddr type != local ip daddr { 198.18.0.0/15, 0.0.0.0/0 }"));
     assert!(script.contains("fib daddr type != local ip6 daddr { ::/0 }"));

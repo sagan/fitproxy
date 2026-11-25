@@ -34,11 +34,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Loaded {} proxy rules", config.rules.rules().len());
     let allowed_cidrs = config.rules.allowed_ip_cidrs();
     let output_cidrs = config.rules.proxied_ip_cidrs();
+    let ignored_cidrs = config.rules.ignored_ip_cidrs();
     if !allowed_cidrs.is_empty() {
         info!("Allowed IP CIDRs for general TPROXY: {:?}", allowed_cidrs);
     }
     if !output_cidrs.is_empty() {
         info!("Proxied IP CIDRs for local output TPROXY: {:?}", output_cidrs);
+    }
+    if !ignored_cidrs.is_empty() {
+        info!("Ignored IP CIDRs bypassing TPROXY: {:?}", ignored_cidrs);
     }
     if !config.interfaces.is_empty() {
         info!("Matching TPROXY interfaces: {:?}", config.interfaces);
@@ -91,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.fakeip_range,
             allowed_cidrs,
             output_cidrs,
+            ignored_cidrs,
             config.listen_addr.port(),
             config.table_id,
             config.fwmark.clone(),

@@ -8,6 +8,7 @@ pub enum Target {
     Socks5 { addr: String, udp: bool },
     Direct,
     Reject,
+    Ignore,
 }
 
 impl fmt::Display for Target {
@@ -23,6 +24,7 @@ impl fmt::Display for Target {
             }
             Target::Direct => write!(f, "direct"),
             Target::Reject => write!(f, "reject"),
+            Target::Ignore => write!(f, "ignore"),
         }
     }
 }
@@ -155,6 +157,8 @@ impl Rule {
             Target::Direct
         } else if target_part.eq_ignore_ascii_case("reject") {
             Target::Reject
+        } else if target_part.eq_ignore_ascii_case("ignore") {
+            Target::Ignore
         } else if let Some(rest) = target_part
             .strip_prefix("socks5://")
             .or_else(|| target_part.strip_prefix("socks5h://"))
@@ -167,6 +171,13 @@ impl Rule {
             // Implicit HTTP proxy
             Target::Http(target_part.to_string())
         };
+
+        if matches!(target, Target::Ignore) && !matches!(pattern, RulePattern::Ip(_)) {
+            return Err(format!(
+                "'ignore' target only applies to IP/CIDR rules, not domain pattern '{}'",
+                pattern_part
+            ));
+        }
 
         Ok(Rule {
             pattern,
@@ -235,14 +246,14 @@ impl RuleSet {
     }
 
     pub fn is_ip_allowed(&self, ip: &IpAddr) -> bool {
-        !matches!(self.match_ip(ip), Target::Reject)
+        !matches!(self.match_ip(ip), Target::Reject | Target::Ignore)
     }
 
     pub fn allowed_ip_cidrs(&self) -> Vec<IpNet> {
         let mut cidrs = Vec::new();
         for rule in &self.rules {
             if let RulePattern::Ip(ref net) = rule.pattern {
-                if !matches!(rule.target, Target::Reject) && !cidrs.contains(net) {
+                if !matches!(rule.target, Target::Reject | Target::Ignore) && !cidrs.contains(net) {
                     cidrs.push(*net);
                 }
             }
@@ -254,7 +265,21 @@ impl RuleSet {
         let mut cidrs = Vec::new();
         for rule in &self.rules {
             if let RulePattern::Ip(ref net) = rule.pattern {
-                if !matches!(rule.target, Target::Reject | Target::Direct) && !cidrs.contains(net) {
+                if !matches!(rule.target, Target::Reject | Target::Direct | Target::Ignore)
+                    && !cidrs.contains(net)
+                {
+                    cidrs.push(*net);
+                }
+            }
+        }
+        cidrs
+    }
+
+    pub fn ignored_ip_cidrs(&self) -> Vec<IpNet> {
+        let mut cidrs = Vec::new();
+        for rule in &self.rules {
+            if let RulePattern::Ip(ref net) = rule.pattern {
+                if matches!(rule.target, Target::Ignore) && !cidrs.contains(net) {
                     cidrs.push(*net);
                 }
             }
@@ -487,5 +512,40 @@ mod tests {
         assert!(!cidrs.contains(&"0.0.0.0/0".parse().unwrap()));
         assert!(!cidrs.contains(&"192.168.0.0/16".parse().unwrap()));
         assert!(!cidrs.contains(&"2001:db8::/32".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_ip_ignore_rule_parsing_and_cidrs() {
+        let r_ignore_v4 = Rule::parse("192.168.0.0/16=ignore").unwrap();
+        assert_eq!(r_ignore_v4.target, Target::Ignore);
+        assert_eq!(r_ignore_v4.target.to_string(), "ignore");
+
+        let r_ignore_v6 = Rule::parse("fe80::/10=IGNORE").unwrap();
+        assert_eq!(r_ignore_v6.target, Target::Ignore);
+
+        let r_ignore_host = Rule::parse("10.0.0.1=ignore").unwrap();
+        assert_eq!(r_ignore_host.target, Target::Ignore);
+
+        // Domain rules with ignore target must be rejected
+        assert!(Rule::parse("example.com=ignore").is_err());
+        assert!(Rule::parse("*.example.com=ignore").is_err());
+        assert!(Rule::parse("*=ignore").is_err());
+
+        let r_direct = Rule::parse("0.0.0.0/0=direct").unwrap();
+        let r_proxy = Rule::parse("10.0.0.0/8=127.0.0.1:8080").unwrap();
+        let set = RuleSet::new(vec![r_ignore_v4, r_ignore_v6, r_direct, r_proxy]);
+
+        let ignored = set.ignored_ip_cidrs();
+        assert_eq!(ignored.len(), 2);
+        assert!(ignored.contains(&"192.168.0.0/16".parse().unwrap()));
+        assert!(ignored.contains(&"fe80::/10".parse().unwrap()));
+
+        let allowed = set.allowed_ip_cidrs();
+        assert_eq!(allowed.len(), 2);
+        assert!(!allowed.contains(&"192.168.0.0/16".parse().unwrap()));
+        assert!(!allowed.contains(&"fe80::/10".parse().unwrap()));
+
+        let proxied = set.proxied_ip_cidrs();
+        assert_eq!(proxied, vec!["10.0.0.0/8".parse().unwrap()]);
     }
 }

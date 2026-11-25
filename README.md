@@ -25,6 +25,7 @@ fitproxy \
   * `socks5h://<ip>:<port>` (alias of `socks5`)
   * `direct` (direct connect, TCP + UDP supported)
   * `reject` (drop / terminate connection)
+  * `ignore` (IP/CIDR rules only: completely bypass TPROXY via `nftables` `accept` rules at the beginning of `prerouting` and `output` chains)
   
   Multiple rules can be provided. Rules are evaluated in order; the first match is used.
   * For domains: by default, `<domain>` matches subdomains as well (e.g. `example.com` matches `example.com`, `a.example.com`, and `a.b.example.com`).

@@ -9,6 +9,7 @@ pub struct NetworkManager {
     fakeip_range: IpNet,
     allowed_ip_cidrs: Vec<IpNet>,
     output_ip_cidrs: Vec<IpNet>,
+    ignored_ip_cidrs: Vec<IpNet>,
     listen_port: u16,
     table_id: u32,
     fwmark: FwMark,
@@ -22,6 +23,7 @@ impl NetworkManager {
         fakeip_range: IpNet,
         allowed_ip_cidrs: Vec<IpNet>,
         output_ip_cidrs: Vec<IpNet>,
+        ignored_ip_cidrs: Vec<IpNet>,
         listen_port: u16,
         table_id: u32,
         fwmark: FwMark,
@@ -32,6 +34,7 @@ impl NetworkManager {
             fakeip_range,
             allowed_ip_cidrs,
             output_ip_cidrs,
+            ignored_ip_cidrs,
             listen_port,
             table_id,
             fwmark,
@@ -111,8 +114,44 @@ impl NetworkManager {
             String::new()
         };
 
+        let mut ignored_v4 = Vec::new();
+        let mut ignored_v6 = Vec::new();
+
+        for cidr in &self.ignored_ip_cidrs {
+            match cidr {
+                IpNet::V4(net) => {
+                    if !ignored_v4.contains(&IpNet::V4(*net)) {
+                        ignored_v4.push(IpNet::V4(*net));
+                    }
+                }
+                IpNet::V6(net) => {
+                    if !ignored_v6.contains(&IpNet::V6(*net)) {
+                        ignored_v6.push(IpNet::V6(*net));
+                    }
+                }
+            }
+        }
+
         let mut prerouting_rules = Vec::new();
         prerouting_rules.push(format!("        {}\n", nft_egress_exclude_expr));
+
+        if !ignored_v4.is_empty() {
+            let v4_set = ignored_v4
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            prerouting_rules.push(format!("        ip daddr {{ {} }} accept\n", v4_set));
+        }
+
+        if !ignored_v6.is_empty() {
+            let v6_set = ignored_v6
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            prerouting_rules.push(format!("        ip6 daddr {{ {} }} accept\n", v6_set));
+        }
 
         if !prerouting_v4.is_empty() {
             let v4_set = prerouting_v4
@@ -141,6 +180,24 @@ impl NetworkManager {
         let mut output_rules = Vec::new();
         output_rules.push(format!("        {}\n", nft_egress_exclude_expr));
         output_rules.push("        ct direction reply accept\n".to_string());
+
+        if !ignored_v4.is_empty() {
+            let v4_set = ignored_v4
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            output_rules.push(format!("        ip daddr {{ {} }} accept\n", v4_set));
+        }
+
+        if !ignored_v6.is_empty() {
+            let v6_set = ignored_v6
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            output_rules.push(format!("        ip6 daddr {{ {} }} accept\n", v6_set));
+        }
 
         if !output_v4.is_empty() {
             let v4_set = output_v4
@@ -519,6 +576,7 @@ mod tests {
             fakeip,
             vec!["0.0.0.0/0".parse().unwrap()],
             vec!["0.0.0.0/0".parse().unwrap()],
+            vec![],
             7080,
             7080,
             fwmark,
@@ -542,6 +600,7 @@ mod tests {
             fakeip,
             vec!["::/0".parse().unwrap()],
             vec!["::/0".parse().unwrap()],
+            vec![],
             7080,
             7080,
             fwmark,
@@ -570,6 +629,7 @@ mod tests {
             fakeip,
             vec!["0.0.0.0/0".parse().unwrap()],
             vec![], // no non-direct CIDRs for output
+            vec![],
             7080,
             7080,
             fwmark,
@@ -585,5 +645,42 @@ mod tests {
         assert!(!output_chain.contains("ip daddr"));
         // Output chain should only have IPv6 fakeip range
         assert!(output_chain.contains("ip6 daddr { fd42:a159:f9f0:1ca::/64 } meta l4proto { tcp, udp } meta mark set"));
+    }
+
+    #[test]
+    fn test_generate_nft_script_with_ignore_cidrs() {
+        let fakeip = "fd42:a159:f9f0:1ca::/64".parse().unwrap();
+        let fwmark = FwMark::parse("0x8000/0x8000").unwrap();
+        let egress_mark = FwMark::parse("0x80/0x80").unwrap();
+        let nm = NetworkManager::new(
+            fakeip,
+            vec!["0.0.0.0/0".parse().unwrap(), "::/0".parse().unwrap()],
+            vec![],
+            vec![
+                "192.168.0.0/16".parse().unwrap(),
+                "fe80::/10".parse().unwrap(),
+            ],
+            7080,
+            7080,
+            fwmark,
+            egress_mark,
+            vec!["wg42*".to_string()],
+        );
+
+        let script = nm.generate_nft_script();
+        let prerouting_chain = script.split("chain prerouting {").nth(1).unwrap().split("chain output {").next().unwrap();
+        let output_chain = script.split("chain output {").nth(1).unwrap();
+
+        let pre_ignore_v4 = prerouting_chain.find("ip daddr { 192.168.0.0/16 } accept").expect("prerouting ignore v4");
+        let pre_ignore_v6 = prerouting_chain.find("ip6 daddr { fe80::/10 } accept").expect("prerouting ignore v6");
+        let pre_tproxy_v4 = prerouting_chain.find("tproxy ip to :7080").expect("prerouting tproxy v4");
+        assert!(pre_ignore_v4 < pre_tproxy_v4);
+        assert!(pre_ignore_v6 < pre_tproxy_v4);
+
+        let out_ignore_v4 = output_chain.find("ip daddr { 192.168.0.0/16 } accept").expect("output ignore v4");
+        let out_ignore_v6 = output_chain.find("ip6 daddr { fe80::/10 } accept").expect("output ignore v6");
+        let out_mark_v6 = output_chain.find("ip6 daddr { fd42:a159:f9f0:1ca::/64 }").expect("output mark v6");
+        assert!(out_ignore_v4 < out_mark_v6);
+        assert!(out_ignore_v6 < out_mark_v6);
     }
 }

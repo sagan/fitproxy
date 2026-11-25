@@ -171,7 +171,7 @@ impl TproxyServer {
             (target, domain)
         } else {
             let target = self.rules.match_ip(&dst_ip).clone();
-            if matches!(target, Target::Reject) {
+            if matches!(target, Target::Reject | Target::Ignore) {
                 debug!(
                     "Dst IP {} in UDP from {} not accepted by IP rules: dropping",
                     dst_ip, peer_addr
@@ -182,7 +182,7 @@ impl TproxyServer {
         };
 
         match target {
-            Target::Reject => {
+            Target::Reject | Target::Ignore => {
                 debug!(
                     "Rejecting UDP packet to {} ({}:{})",
                     target_host, dst_ip, dst_port
@@ -461,9 +461,9 @@ async fn handle_tcp_connection(
         (target, domain)
     } else {
         let target = rules.match_ip(&dst_ip).clone();
-        if matches!(target, Target::Reject) {
+        if matches!(target, Target::Reject | Target::Ignore) {
             debug!(
-                "Dst IP {} not accepted by any IP rule (or matched reject rule) from {}: dropping connection",
+                "Dst IP {} not accepted by any IP rule (or matched reject/ignore rule) from {}: dropping connection",
                 dst_ip, peer_addr
             );
             return;
@@ -477,7 +477,7 @@ async fn handle_tcp_connection(
     );
 
     match target {
-        Target::Reject => {
+        Target::Reject | Target::Ignore => {
             debug!(
                 "Rejecting connection to {} ({}:{})",
                 target_host, dst_ip, dst_port
